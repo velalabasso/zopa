@@ -285,14 +285,32 @@ for log_dir_name in os.listdir(base_folder):
     }, inplace=True)
 
     # =====================================================
-    # CSV
+    # CSV (FORMAT STRICT)
     # =====================================================
+
     out_csv = os.path.join(log_dir, base + ".csv")
 
-    grouped[["longitude", "latitude", "timestamp", "sog", "tws"]].to_csv(
+    # force copie propre + ordre EXACT
+    csv_df = grouped.copy()
+
+    # format timestamp ISO
+    csv_df["timestamp"] = pd.to_datetime(csv_df["timestamp"]).dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # sélection + ordre EXACT demandé
+    csv_df = csv_df[[
+        "longitude",
+        "latitude",
+        "timestamp",
+        "sog",
+        "tws"
+    ]]
+
+    # export
+    csv_df.to_csv(
         out_csv,
         index=False,
-        sep=";"
+        sep=";",
+        float_format="%.5f"   # optionnel mais propre pour nav/science
     )
 
     print("CSV saved:", out_csv)
