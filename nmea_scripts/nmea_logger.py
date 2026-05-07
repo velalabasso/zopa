@@ -60,7 +60,9 @@ def parse_rmc(line):
         lat_dir = parts[4]
         lon = parts[5]
         lon_dir = parts[6]
+
         time_utc = parts[1]
+        date_utc = parts[9]
 
         if lat == "" or lon == "":
             return None
@@ -70,7 +72,8 @@ def parse_rmc(line):
             "lat_dir": lat_dir,
             "lon": lon,
             "lon_dir": lon_dir,
-            "time": time_utc
+            "time": time_utc,
+            "date": date_utc
         }
 
     except:
@@ -120,17 +123,27 @@ def main():
                             break
 
                 # =================================================
-                # NOM DU LOG À PARTIR GPS
+                # NOM DU LOG AVEC DATE GPS
                 # =================================================
-                timestamp = first_fix["time"]
+
+                gps_date = first_fix["date"]   # ex: 060526
+                gps_time = first_fix["time"]   # ex: 050015
+
+                # convertir ddmmyy -> yyyymmdd
+                formatted_date = (
+                    f"20{gps_date[4:6]}"
+                    f"{gps_date[2:4]}"
+                    f"{gps_date[0:2]}"
+                )
 
                 log_name = (
                     f"nmea_"
-                    f"{timestamp}_"
+                    f"{formatted_date}_"
+                    f"{gps_time}_"
                     f"{first_fix['lat']}{first_fix['lat_dir']}_"
                     f"{first_fix['lon']}{first_fix['lon_dir']}"
                 )
-
+                
                 log_dir = os.path.join(base_folder, log_name)
                 os.makedirs(log_dir, exist_ok=True)
 
