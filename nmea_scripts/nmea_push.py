@@ -2,8 +2,10 @@
 
 import subprocess
 import os
-import shutil
 
+# =========================================================
+# CONFIG
+# =========================================================
 REPO_PATH = "/home/zopa/science/zopa_repo"
 
 LOG_FOLDER = "/home/zopa/science/nmea_logs"
@@ -11,58 +13,96 @@ SCRIPT_FOLDER = "/home/zopa/science/nmea_scripts"
 
 
 # =========================================================
-# COPY FOLDERS INTO REPO
+# SYNC FOLDER (robuste avec rsync)
 # =========================================================
 def sync_folder(src, dst):
-    if os.path.exists(dst):
-        shutil.rmtree(dst)
+    os.makedirs(dst, exist_ok=True)
 
-    shutil.copytree(src, dst)
-    print(f"Copié: {src} -> {dst}")
+    subprocess.run([
+        "rsync",
+        "-av",
+        "--delete",
+        src + "/",
+        dst + "/"
+    ], check=True)
+
+    print(f"Sync: {src} -> {dst}")
 
 
 # =========================================================
-# GIT PUSH
+# GIT PUSH ROBUSTE
 # =========================================================
 def git_push():
     try:
         os.chdir(REPO_PATH)
 
-        # 1. voir si changements
+        # =====================================================
+        # 1. Vérifier changements locaux
+        # =====================================================
         result = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True,
             text=True
         )
 
-        if result.stdout.strip() == "":
-            print("Aucun changement à push")
-            return
+        if result.stdout.strip():
+            print("Changements détectés -> commit")
 
-        # 2. stage + commit d'abord
-        subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "add", "."], check=True)
 
-        subprocess.run(
-            ["git", "commit", "-m", "Ajout logs NMEA + scripts"],
-            check=True
-        )
+            subprocess.run(
+                ["git", "commit", "-m", "Ajout logs NMEA + scripts"],
+                check=True
+            )
+        else:
+            print("Aucun nouveau changement")
 
-        # 3. sync avec GitHub
-        subprocess.run(["git", "pull", "--rebase"], check=True)
+        # =====================================================
+        # 2. Sync avec remote (non bloquant)
+        # =====================================================
+        print("Tentative pull GitHub...")
 
-        # 4. push
-        subprocess.run(["git", "push"], check=True)
+        try:
+            subprocess.run(
+                ["git", "pull", "--rebase"],
+                check=True,
+                timeout=20
+            )
+        except Exception as e:
+            print(f"Pull ignoré (réseau ou conflit): {e}")
 
-        print("Push GitHub OK")
+        # =====================================================
+        # 3. Push avec retry
+        # =====================================================
+        print("Tentative push GitHub...")
+
+        pushed = False
+
+        for i in range(3):
+            try:
+                subprocess.run(
+                    ["git", "push"],
+                    check=True,
+                    timeout=20
+                )
+                print("Push GitHub OK")
+                pushed = True
+                break
+
+            except Exception as e:
+                print(f"Push échoué (tentative {i+1}/3): {e}")
+
+        if not pushed:
+            print("Push en attente (sera retenté au prochain nmea_push)")
 
     except Exception as e:
-        print(f"Erreur Git: {e}")
+        print(f"Erreur Git globale: {e}")
+
 
 # =========================================================
 # MAIN
 # =========================================================
 def main():
-
     print("Sync logs + scripts vers repo Git...")
 
     # logs
@@ -77,6 +117,7 @@ def main():
         os.path.join(REPO_PATH, "nmea_scripts")
     )
 
+    # git
     git_push()
 
 
