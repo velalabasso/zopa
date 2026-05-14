@@ -8,6 +8,8 @@ import shutil
 import os
 import threading
 import math
+import signal
+import sys
 from datetime import datetime
 
 # =========================================================
@@ -31,7 +33,6 @@ event_log_file = None
 latest_fix     = None
 
 distance_traveled_nm = 0
-next_milestone       = 5
 initial_distance_nm  = None
 last_position        = None
 
@@ -54,20 +55,88 @@ ctd_keel_state      = "OFF"
 ctd_profile_state   = "OFF"
 ctd_intercomp_state = "OFF"
 
+# Flag d'arrêt propre — positionné par le handler SIGINT
+_shutdown_requested = False
+
+# Garde : évite de déclencher la clôture deux fois si on reste < 1 NM
+_arrival_triggered = False
+
+# =========================================================
+# SIGNAL HANDLER — Ctrl+C propre, quelle que soit la phase
+# =========================================================
+
+def _sigint_handler(signum, frame):
+    """
+    Intercepte Ctrl+C à n'importe quel moment (connect, sleep, recv…).
+    Positionne le flag d'arrêt et demande le port d'arrivée.
+    Le thread principal détecte le flag et clôture proprement.
+    """
+    global _shutdown_requested
+
+    # Éviter une double demande si Ctrl+C est pressé deux fois
+    if _shutdown_requested:
+        print("\n(interruption déjà en cours…)")
+        return
+
+    _shutdown_requested = True
+
+    print("\n\n⚓  ARRÊT DEMANDÉ")
+    _ask_arrival_and_close()
+
+
+def _ask_arrival_and_close(default_port=""):
+    """
+    Demande le port d'arrivée (avec valeur par défaut si fournie),
+    écrit les events de clôture, compresse le fichier et quitte.
+    """
+    global event_log_file, distance_traveled_nm, _arrival_triggered
+
+    _arrival_triggered = True   # bloquer un double déclenchement
+
+    try:
+        if default_port:
+            prompt = f"Port d'arrivée [{default_port}] : "
+        else:
+            prompt = "Port d'arrivée : "
+        arrival = input(prompt).strip()
+        if not arrival:
+            arrival = default_port   # [Entrée] seul → on accepte la destination
+    except (EOFError, KeyboardInterrupt):
+        arrival = default_port
+
+    if arrival:
+        write_event(f"ARRIVAL : {arrival}")
+    write_event(f"TOTAL TRAVELED : {distance_traveled_nm:.1f} nm")
+
+    if event_log_file and os.path.exists(event_log_file):
+        print("Compression du log…")
+        compress_file(event_log_file)
+        print("Fichier compressé.")
+    else:
+        print("(aucun fichier log à compresser)")
+
+    print("Au revoir.")
+    # Sortie propre depuis n'importe quel thread
+    os._exit(0)
+
+
+# Enregistrement du handler AVANT tout le reste
+signal.signal(signal.SIGINT, _sigint_handler)
+
 # =========================================================
 # WIFI
 # =========================================================
 
 def connect_wifi():
-    print("Connecting WiFi...")
+    print("Connexion WiFi…")
     try:
         subprocess.run(
             ["nmcli", "dev", "wifi", "connect", WIFI_SSID, "password", WIFI_PASSWORD],
             check=True
         )
-        print("WiFi connected")
+        print("WiFi connecté.")
     except Exception as e:
-        print(f"WiFi error : {e}")
+        print(f"Erreur WiFi : {e}")
 
 # =========================================================
 # COMPRESSION
@@ -79,17 +148,16 @@ def compress_file(file_path):
         with gzip.open(gz_path, "wb") as f_out:
             shutil.copyfileobj(f_in, f_out)
     os.remove(file_path)
-    print(f"Compressed : {gz_path}")
+    print(f"Compressé : {gz_path}")
 
 # =========================================================
-# FORMAT deg-min.decimal
+# FORMAT DEG-MIN
 # =========================================================
 
 def parse_deg_min(text):
     """
     Accepte :
-      43 21.456 N  |  4321.456N  |  43.3576  |  -43.3576
-    Retourne un float decimal.
+      43°21.456'N  |  43 21.456 N  |  4321.456N  |  43.3576
     """
     text = text.strip().upper()
     direction = None
@@ -114,27 +182,23 @@ def parse_deg_min(text):
     else:
         raise ValueError(f"Format non reconnu : {text}")
 
-    if direction in ["S", "W"]: dec = -abs(dec)
-    elif direction in ["N", "E"]: dec = abs(dec)
+    if direction in ["S", "W"]:   dec = -abs(dec)
+    elif direction in ["N", "E"]: dec =  abs(dec)
     return dec
 
 
 def decimal_to_deg_min(decimal, is_lon=False):
-    """
-    40.9986  ->  40deg59.916'N
-    9.6213   ->  009deg37.278'E
-    """
     if decimal is None or (isinstance(decimal, float) and math.isnan(decimal)):
         return "---"
     direction = ("E" if decimal >= 0 else "W") if is_lon else ("N" if decimal >= 0 else "S")
-    dw        = 3 if is_lon else 2
-    a         = abs(decimal)
-    deg       = int(a)
-    mn        = (a - deg) * 60.0
+    dw  = 3 if is_lon else 2
+    a   = abs(decimal)
+    deg = int(a)
+    mn  = (a - deg) * 60.0
     return f"{deg:0{dw}d}deg{mn:07.4f}'{direction}"
 
 # =========================================================
-# NMEA -> DECIMAL
+# NMEA → DECIMAL
 # =========================================================
 
 def nmea_to_decimal(coord, direction):
@@ -194,7 +258,7 @@ def write_event(event):
             with open(event_log_file, "a") as f:
                 f.write(line + "\n")
     except Exception as e:
-        print(f"Event error : {e}")
+        print(f"Erreur event : {e}")
 
 # =========================================================
 # NAVIGATION SETUP
@@ -212,12 +276,8 @@ def navigation_setup():
     departure   = input("Departure : ").strip()
     destination = input("Destination : ").strip()
 
-    # Lat/lon destination en deg-min.decimal
-    print("\nFormats acceptes pour lat/lon :")
-    print("  43°21.456'N        (degres-minutes avec symboles)")
-    print("  43 21.456 N        (degres minutes direction separes)")
-    print("  4321.456 N         (format NMEA brut)")
-    print("  43.3576            (degres decimaux, positif=N/E)")
+    print("\nFormats acceptés pour lat/lon :")
+    print("  43°21.456'N   |   43 21.456 N   |   4321.456N   |   43.3576")
     while True:
         try:
             raw = input("Destination latitude  (ex: 43 21.456 N) : ").strip()
@@ -225,7 +285,7 @@ def navigation_setup():
             print(f"  -> {decimal_to_deg_min(destination_lat, is_lon=False)}")
             break
         except ValueError as e:
-            print(f"  Format non reconnu ({e}), reessayez.")
+            print(f"  Format non reconnu ({e}), réessayez.")
 
     while True:
         try:
@@ -234,9 +294,8 @@ def navigation_setup():
             print(f"  -> {decimal_to_deg_min(destination_lon, is_lon=True)}")
             break
         except ValueError as e:
-            print(f"  Format non reconnu ({e}), reessayez.")
+            print(f"  Format non reconnu ({e}), réessayez.")
 
-    # Gasoil
     print()
     while True:
         try:
@@ -244,15 +303,13 @@ def navigation_setup():
             if not (0 <= fuel_pct <= 100): raise ValueError("hors [0-100]")
             break
         except ValueError as e:
-            print(f"  Valeur invalide ({e}), reessayez.")
+            print(f"  Valeur invalide ({e}), réessayez.")
 
-    # Navigation
     print()
     motor_state  = "ON" if input("Engine ON ? (Y/N) : ").strip().upper() == "Y" else "OFF"
     dessal_state = "ON" if input("Dessal ON ? (Y/N) : ").strip().upper() == "Y" else "OFF"
     sea_state    = input("Sea state (0-9) : ").strip()
 
-    # Science
     print("\n-----------------------------------")
     print("         SCIENCE SETUP")
     print("-----------------------------------\n")
@@ -289,7 +346,7 @@ def terminal_event_listener():
 
     def print_help():
         print("\n===================================")
-        print("           COMMANDS")
+        print("           COMMANDES")
         print("===================================")
         print("\n--- Navigation ---")
         print(" engine on/off")
@@ -346,7 +403,7 @@ def terminal_event_listener():
                 if len(parts) == 2 and parts[1].isdigit():
                     sea_state = parts[1]; write_event(f"SEA {parts[1]}")
                 else:
-                    print("Unknown command")
+                    print("Commande inconnue.")
 
             elif cmd == "ctd keel on":       ctd_keel_state = "ON";       write_event("CTD KEEL ON")
             elif cmd == "ctd keel off":      ctd_keel_state = "OFF";      write_event("CTD KEEL OFF")
@@ -367,11 +424,19 @@ def terminal_event_listener():
 
             elif cmd == "help":
                 print_help()
-            else:
-                print("Unknown command")
 
+            elif cmd == "":
+                pass   # ligne vide ignorée silencieusement
+
+            else:
+                print("Commande inconnue.")
+
+        except EOFError:
+            # stdin fermé (ex. Ctrl+D) — on quitte le thread proprement
+            break
         except Exception as e:
-            print(f"Terminal error : {e}")
+            if not _shutdown_requested:
+                print(f"Erreur terminal : {e}")
 
 # =========================================================
 # MAIN
@@ -380,40 +445,45 @@ def terminal_event_listener():
 def main():
     global latest_fix, event_log_file
     global last_position
-    global distance_traveled_nm, next_milestone, initial_distance_nm
+    global distance_traveled_nm, initial_distance_nm
 
     connect_wifi()
     setup = navigation_setup()
 
     threading.Thread(target=terminal_event_listener, daemon=True).start()
 
-    print("Waiting GPS fix...")
-    while latest_fix is None:
+    # ---------- attente du premier fix GPS ----------
+    print("En attente du fix GPS…")
+    while latest_fix is None and not _shutdown_requested:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(10)
                 s.connect((HOST, PORT))
-                while latest_fix is None:
+                while latest_fix is None and not _shutdown_requested:
                     data = s.recv(2048).decode(errors="ignore")
                     for line in data.split("\n"):
                         fix = parse_rmc(line.strip())
                         if fix:
                             latest_fix = fix; break
-        except:
-            time.sleep(2)
+        except Exception:
+            if not _shutdown_requested:
+                time.sleep(2)
+
+    if _shutdown_requested:
+        return   # le handler a déjà tout géré
 
     initial_distance_nm = haversine_nm(
         latest_fix["lat"], latest_fix["lon"],
         setup["destination_lat"], setup["destination_lon"]
     )
 
-    # Nom fichier log
-    ts      = latest_fix["datetime"].strftime("%Y%m%d_%H%M%S")
-    rlat    = latest_fix["lat"];  rlon = latest_fix["lon"]
-    ldir    = "N" if rlat >= 0 else "S"; alat = abs(rlat); dlt = int(alat); mlt = (alat - dlt) * 60
-    londir  = "E" if rlon >= 0 else "W"; alon = abs(rlon); dln = int(alon); mln = (alon - dln) * 60
-    ln      = f"nmea_{ts}_{dlt:02d}{mlt:07.4f}{ldir}_{dln:03d}{mln:07.4f}{londir}"
-    ld      = os.path.join(base_folder, ln)
+    # ---------- création du fichier log ----------
+    ts     = latest_fix["datetime"].strftime("%Y%m%d_%H%M%S")
+    rlat   = latest_fix["lat"]; rlon = latest_fix["lon"]
+    ldir   = "N" if rlat >= 0 else "S"; alat = abs(rlat); dlt = int(alat); mlt = (alat-dlt)*60
+    londir = "E" if rlon >= 0 else "W"; alon = abs(rlon); dln = int(alon); mln = (alon-dln)*60
+    ln     = f"nmea_{ts}_{dlt:02d}{mlt:07.4f}{ldir}_{dln:03d}{mln:07.4f}{londir}"
+    ld     = os.path.join(base_folder, ln)
     os.makedirs(ld, exist_ok=True)
     output_file    = os.path.join(ld, f"{ln}.txt")
     event_log_file = output_file
@@ -428,12 +498,13 @@ def main():
         f.write("====================================\n\n")
         f.write(f"SKIPPER : {setup['skipper']}\n")
         f.write(f"CREW : {setup['crew']}\n")
-        f.write(f"FUEL : {setup['fuel_pct']:.0f}%\n")
+        # Un seul % — la valeur est déjà un float
+        f.write(f"FUEL : {setup['fuel_pct']:.0f} %\n")
         f.write(f"DEPARTURE : {setup['departure']}\n")
         f.write(f"DESTINATION : {setup['destination']}\n")
         f.write(f"DESTINATION LAT : {dst_lat_str}\n")
         f.write(f"DESTINATION LON : {dst_lon_str}\n")
-        f.write(f"INITIAL DISTANCE : {initial_distance_nm:.1f} nm\n")
+        f.write(f"INITIAL DISTANCE : {initial_distance_nm:.1f}\n")
         f.write(f"ENGINE : {setup['engine']}\n")
         f.write(f"DESSAL : {setup['dessal']}\n")
         f.write(f"SEA : {setup['sea']}\n")
@@ -443,22 +514,25 @@ def main():
     if setup["ctd_keel"] == "ON":
         write_event("CTD KEEL ON")
 
-    while True:
+    # ---------- boucle principale NMEA ----------
+    while not _shutdown_requested:
         try:
-            print("Connecting NMEA...")
+            print("Connexion NMEA…")
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(10)
                 s.connect((HOST, PORT))
-                print("NMEA connected")
+                print("NMEA connecté.")
                 last_display = time.time()
 
-                while True:
+                while not _shutdown_requested:
                     data = s.recv(2048).decode(errors="ignore")
-                    if not data: raise Exception("Connection lost")
+                    if not data:
+                        raise Exception("Connexion perdue")
 
                     for line in data.split("\n"):
                         line = line.strip()
-                        if not line.startswith("$"): continue
+                        if not line.startswith("$"):
+                            continue
 
                         with open(output_file, "a") as f:
                             f.write(line + "\n")
@@ -470,45 +544,46 @@ def main():
 
                             if last_position:
                                 d = haversine_nm(last_position[0], last_position[1], lat, lon)
-                                if d < 1: distance_traveled_nm += d
+                                if d < 1:
+                                    distance_traveled_nm += d
                             last_position = (lat, lon)
 
-                            remaining_nm = haversine_nm(lat, lon,
-                                setup["destination_lat"], setup["destination_lon"])
-                            completed_nm = initial_distance_nm - remaining_nm
-                            pct          = (completed_nm / initial_distance_nm) * 100
-
-                            if completed_nm >= next_milestone:
-                                write_event(f"{completed_nm:.1f} NM COMPLETED | "
-                                            f"{pct:.1f}% DONE | {remaining_nm:.1f} NM REMAINING")
-                                next_milestone += 5
-
-                            if remaining_nm < 0.2:
-                                write_event("DESTINATION REACHED")
+                            # Vérification arrivée à destination (< 1 NM)
+                            remaining_nm = haversine_nm(
+                                lat, lon,
+                                setup["destination_lat"], setup["destination_lon"]
+                            )
+                            if remaining_nm < 1.0 and not _arrival_triggered:
+                                _arrival_triggered = True
+                                print(f"\n⚓  Moins de 1 NM de la destination ({setup['destination']}).")
+                                _ask_arrival_and_close(default_port=setup["destination"])
 
                         if time.time() - last_display > 30:
                             if latest_fix:
-                                ls = decimal_to_deg_min(latest_fix["lat"], is_lon=False)
-                                lo = decimal_to_deg_min(latest_fix["lon"], is_lon=True)
-                                rem = haversine_nm(latest_fix["lat"], latest_fix["lon"],
-                                    setup["destination_lat"], setup["destination_lon"])
+                                ls  = decimal_to_deg_min(latest_fix["lat"], is_lon=False)
+                                lo  = decimal_to_deg_min(latest_fix["lon"], is_lon=True)
+                                rem = haversine_nm(
+                                    latest_fix["lat"], latest_fix["lon"],
+                                    setup["destination_lat"], setup["destination_lon"]
+                                )
                                 print(f"[NMEA] {ls}  {lo}  REM={rem:.1f} nm")
                             last_display = time.time()
 
-        except KeyboardInterrupt:
-            print("\nStopping logger")
-            arrival = input("Arrival : ").strip()
-            write_event(f"ARRIVAL : {arrival}")
-            write_event(f"TOTAL TRAVELED : {distance_traveled_nm:.1f} nm")
-            print("Compressing log...")
-            compress_file(output_file)
-            print("Bye")
-            break
-
         except Exception as e:
-            print(f"\nDisconnected : {e}")
-            print("Reconnect in 5 sec...\n")
-            time.sleep(5)
+            if _shutdown_requested:
+                break
+            print(f"\nDéconnecté : {e}")
+            print("Reconnexion dans 5 s…\n")
+            # Pause interruptible : on dort par petits intervalles
+            for _ in range(50):
+                if _shutdown_requested:
+                    break
+                time.sleep(0.1)
+
+    # Si on sort de la boucle sans passer par le handler (cas rare), on clôture quand même
+    if not _shutdown_requested:
+        _ask_arrival_and_close()
+
 
 if __name__ == "__main__":
     main()
