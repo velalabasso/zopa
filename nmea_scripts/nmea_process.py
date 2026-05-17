@@ -355,27 +355,42 @@ def parse_nmea(file_path):
             if not np.isnan(lon): last_lon = lon
 
         elif msg == "$GPGGA":
-            current["gps_fix_quality"] = safe_int(parts[6])
-            current["satellites_used"] = safe_int(parts[7])
-            current["hdop"]            = safe_float(parts[8])
-            current["altitude"]        = safe_float(parts[9])
+            if len(parts) > 9:
+                current["gps_fix_quality"] = safe_int(parts[6])
+                current["satellites_used"] = safe_int(parts[7])
+                current["hdop"]            = safe_float(parts[8])
+                current["altitude"]        = safe_float(parts[9])
+
         elif msg == "$GPVTG":
-            current["COG_true"] = safe_float(parts[1])
-            current["SOG_VTG"]  = safe_float(parts[5])
+            if len(parts) > 5:
+                current["COG_true"] = safe_float(parts[1])
+                current["SOG_VTG"]  = safe_float(parts[5])
+
         elif msg == "$IIHDG":
-            current["HDG"] = safe_float(parts[1])
+            if len(parts) > 1:
+                current["HDG"] = safe_float(parts[1])
+
         elif msg == "$WIMWV":
-            if parts[2] == "R":
+            # parts[1]=angle, parts[2]=R/T, parts[3]=speed, parts[4]=unit
+            if len(parts) > 4 and parts[2] == "R":
                 current["AWA"] = safe_float(parts[1])
                 current["AWS"] = safe_float(parts[3])
+
         elif msg == "$WIMWD":
-            current["TWD"] = safe_float(parts[1])
-            current["TWS"] = safe_float(parts[5])
+            # parts[1]=dir_true, parts[3]=dir_mag, parts[5]=speed_kn
+            if len(parts) > 5:
+                current["TWD"] = safe_float(parts[1])
+                current["TWS"] = safe_float(parts[5])
+
         elif msg == "$SDDPT":
-            current["depth_m"] = safe_float(parts[1])
+            if len(parts) > 1:
+                current["depth_m"] = safe_float(parts[1])
+
         elif msg == "$SDDBT":
-            current["depth_ft"]    = safe_float(parts[1])
-            current["depth_m_dbt"] = safe_float(parts[3])
+            if len(parts) > 3:
+                current["depth_ft"]    = safe_float(parts[1])
+                current["depth_m_dbt"] = safe_float(parts[3])
+
         elif msg == "$IIXDR":
             for i in range(1, len(parts)-1, 4):
                 try:
@@ -386,9 +401,11 @@ def parse_nmea(file_path):
                     elif name == "BARO":    current["pressure"]     = val
                     elif name == "RUDDER":  current["rudder_angle"] = val
                 except: pass
+
         elif msg == "$SDVLW":
-            current["log_total_nm"] = safe_float(parts[2])
-            current["log_trip_nm"]  = safe_float(parts[4])
+            if len(parts) > 4:
+                current["log_total_nm"] = safe_float(parts[2])
+                current["log_trip_nm"]  = safe_float(parts[4])
 
     if current: records.append(current)
 
