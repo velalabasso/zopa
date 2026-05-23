@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
 # =========================================================
-# CHARGEMENT DES DONNEES CARTOGRAPHIQUES LOCALES
+# LOCAL MAP DATA
 # =========================================================
 
 MAP_DIR  = os.path.expanduser("~/science/mapdata")
@@ -81,7 +81,6 @@ def nmea_to_decimal(coord, direction):
 
 
 def decimal_to_deg_min(decimal, is_lon=False):
-    """40.9986 -> '40°59.916'N'  |  9.6213 -> '009°37.278'E'"""
     if decimal is None:
         return "---"
     try:
@@ -110,44 +109,10 @@ def elapsed_dhms(td):
     return " ".join(parts)
 
 
-def circ_mean_vec(sin_arr, cos_arr):
-    """Moyenne circulaire à partir de tableaux sin/cos pré-calculés."""
-    return float(np.degrees(np.arctan2(np.nanmean(sin_arr), np.nanmean(cos_arr))) % 360)
-
-
 def circ_mean(angles_deg):
     r = np.radians(angles_deg.dropna())
     if len(r) == 0: return np.nan
     return float(np.degrees(np.arctan2(np.mean(np.sin(r)), np.mean(np.cos(r)))) % 360)
-
-
-# =========================================================
-# TRUE WIND
-# =========================================================
-
-def compute_twa(awa, aws, sog, hdg):
-    try:
-        if any(np.isnan(v) for v in [awa, aws, sog, hdg]): return np.nan
-        awa = np.radians(awa); hdg = np.radians(hdg)
-        twx = aws * np.cos(awa) + sog * np.cos(hdg)
-        twy = aws * np.sin(awa) + sog * np.sin(hdg)
-        return float(np.degrees(np.arctan2(twy, twx)) % 360)
-    except:
-        return np.nan
-
-
-def compute_allure(twa):
-    try:
-        if np.isnan(twa): return "-"
-        a = twa % 360
-        if a > 180: a = 360 - a
-        if a < 55:    return "close-hauled"
-        elif a < 70:  return "close reach"
-        elif a < 110: return "beam reach"
-        elif a < 150: return "broad reach"
-        else:         return "run"
-    except:
-        return "-"
 
 
 # =========================================================
@@ -163,7 +128,6 @@ def haversine_nm(lat1, lon1, lat2, lon2):
 
 
 def haversine_vec(lat1, lon1, lat2, lon2):
-    """Version vectorisée — accepte des arrays numpy."""
     R    = 6371000
     phi1 = np.radians(lat1); phi2 = np.radians(lat2)
     dphi = np.radians(lat2 - lat1); dlon = np.radians(lon2 - lon1)
@@ -172,10 +136,14 @@ def haversine_vec(lat1, lon1, lat2, lon2):
 
 
 # =========================================================
-# EVENT CLASSIFIER  — MILESTONE supprimé
+# EVENT CLASSIFIER
 # =========================================================
 
 def classify_event(raw):
+    # Strip optional timestamp prefix  "2024-06-01T12:34:56Z | ENGINE ON"
+    if " | " in raw:
+        raw = raw.split(" | ", 1)[1].strip()
+
     raw = raw.strip()
     if raw.startswith("ENGINE"):           return "ENGINE",        raw.replace("ENGINE","").strip()
     elif raw.startswith("MAIN ON"):        return "MAIN",          ("ON " + raw.replace("MAIN ON","").strip()).strip()
@@ -203,7 +171,6 @@ def classify_event(raw):
     elif raw == "CTD PROFILE OFF":         return "CTD_PROFILE",   "OFF"
     elif raw == "CTD INTERCOMP ON":        return "CTD_INTERCOMP", "ON"
     elif raw == "CTD INTERCOMP OFF":       return "CTD_INTERCOMP", "OFF"
-    # MILESTONE supprimé — les lignes "NM COMPLETED / NM REMAINING" sont ignorées
     elif "NM COMPLETED" in raw or "NM REMAINING" in raw: return "SKIP", raw
     elif raw == "DESTINATION REACHED":     return "ARRIVAL",       "DESTINATION REACHED"
     elif raw.startswith("ARRIVAL"):        return "ARRIVAL",       raw.replace("ARRIVAL :","").strip()
@@ -233,14 +200,47 @@ def parse_nmea(file_path):
         "initial_dist_nm":"", "engine_start":"",
         "dessal_start":"", "sea_start":"", "ctd_keel_start":"",
         "date_depart":"", "arrival":"",
+        # boat check fields (new)
+        "bilges_dry":"", "portholes_closed":"", "boat_stowed":"",
+        # engine check fields
+        "fuel_pre_filter":"", "seawater_filter":"", "engine_bilge":"",
+        "oil_level":"", "coolant":"", "belt":"", "seacock":"",
+        "route_type":"",
     }
 
     HEADER_KEYS = {
-        "SKIPPER":"skipper", "CREW":"crew", "FUEL":"fuel_pct",
-        "DEPARTURE":"departure", "DESTINATION":"destination",
-        "DESTINATION LAT":"destination_lat", "DESTINATION LON":"destination_lon",
-        "INITIAL DISTANCE":"initial_dist_nm", "ENGINE":"engine_start",
-        "DESSAL":"dessal_start", "SEA":"sea_start", "CTD KEEL":"ctd_keel_start",
+        "SKIPPER"            : "skipper",
+        "CREW"               : "crew",
+        "FUEL"               : "fuel_pct",
+        "DEPARTURE"          : "departure",
+        "DESTINATION LAT"    : "destination_lat",
+        "DESTINATION LON"    : "destination_lon",
+        "DESTINATION"        : "destination",
+        "INITIAL DISTANCE"   : "initial_dist_nm",
+        "ENGINE"             : "engine_start",
+        "DESSAL"             : "dessal_start",
+        "SEA"                : "sea_start",
+        "CTD KEEL"           : "ctd_keel_start",
+        # Direct leg (new logger key)
+        "DIRECT LEG"         : "route_type",
+        # Legacy key
+        "ROUTE TYPE"         : "route_type",
+        # Boat check
+        "BILGES DRY"         : "bilges_dry",
+        "PORTHOLES CLOSED"   : "portholes_closed",
+        "BOAT STOWED"        : "boat_stowed",
+        # Engine check — keys as written by nmea_logger.py
+        "FUEL PRE-FILTER"    : "fuel_pre_filter",
+        "SEA WATER FILTER"   : "seawater_filter",   # logger key
+        "SEAWATER FILTER"    : "seawater_filter",   # legacy
+        "ENGINE BILGE"       : "engine_bilge",
+        "OIL"                : "oil_level",         # logger writes "OIL : xx %"
+        "OIL LEVEL"          : "oil_level",         # legacy
+        "COOLANT"            : "coolant",
+        "BELT"               : "belt",              # logger writes "BELT : OK"
+        "BELT TENSION"       : "belt",              # legacy
+        "SEA COCK + IGNITION": "seacock",           # logger key
+        "SEACOCK + IGNITION" : "seacock",           # legacy
     }
 
     cur_engine="OFF"; cur_dessal="OFF"; cur_main="OFF"
@@ -258,7 +258,7 @@ def parse_nmea(file_path):
     for line in all_lines:
         line = line.strip()
 
-        # Header
+        # Header lines  (key : value, not NMEA, not EVENT)
         if " : " in line and not line.startswith("$") and not line.startswith("# EVENT"):
             for hk, mk in HEADER_KEYS.items():
                 if line.startswith(hk + " :"):
@@ -269,7 +269,6 @@ def parse_nmea(file_path):
             raw = line.replace("# EVENT :", "").strip()
             etype, edetail = classify_event(raw)
 
-            # Ignorer les MILESTONE (SKIP)
             if etype == "SKIP":
                 continue
 
@@ -336,7 +335,7 @@ def parse_nmea(file_path):
             })
             continue
 
-        # NMEA
+        # NMEA sentences
         if not line.startswith("$"): continue
         parts = line.split(","); msg = parts[0]
 
@@ -345,8 +344,9 @@ def parse_nmea(file_path):
             dt  = pd.to_datetime(parts[9]+parts[1], format="%d%m%y%H%M%S", errors="coerce")
             lat = nmea_to_decimal(parts[3], parts[4])
             lon = nmea_to_decimal(parts[5], parts[6])
+            sog = safe_float(parts[7])
             current.update({"datetime":dt, "lat_raw":lat, "lon_raw":lon,
-                             "SOG_RMC":safe_float(parts[7]), "COG_RMC":safe_float(parts[8])})
+                             "SOG_RMC":sog, "COG_RMC":safe_float(parts[8])})
             if not pd.isnull(dt):
                 last_datetime = dt
                 if first_datetime is None: first_datetime = dt
@@ -371,13 +371,11 @@ def parse_nmea(file_path):
                 current["HDG"] = safe_float(parts[1])
 
         elif msg == "$WIMWV":
-            # parts[1]=angle, parts[2]=R/T, parts[3]=speed, parts[4]=unit
             if len(parts) > 4 and parts[2] == "R":
                 current["AWA"] = safe_float(parts[1])
                 current["AWS"] = safe_float(parts[3])
 
         elif msg == "$WIMWD":
-            # parts[1]=dir_true, parts[3]=dir_mag, parts[5]=speed_kn
             if len(parts) > 5:
                 current["TWD"] = safe_float(parts[1])
                 current["TWS"] = safe_float(parts[5])
@@ -494,7 +492,7 @@ def resample_every_0_1nm(df, df_events=None):
 
 
 # =========================================================
-# TRACK CHART — taille fixe, zoom adapté
+# TRACK CHART
 # =========================================================
 
 def _clip(arr, lon_min, lon_max, lat_min, lat_max, margin=1.5):
@@ -508,9 +506,6 @@ def _clip(arr, lon_min, lon_max, lat_min, lat_max, margin=1.5):
 
 
 def build_track_map(df, meta):
-    """
-    Carte de route — taille fixe A4 paysage (26 cm × 17 cm), zoom adapté au tracé.
-    """
     dft = df.dropna(subset=["lat_raw","lon_raw"]).copy()
     if dft.empty: return None
 
@@ -528,7 +523,6 @@ def build_track_map(df, meta):
     arr_label = meta.get("destination","") or "Arrival"
     dist_str  = meta.get("initial_dist_nm","")
 
-    # Étendue avec padding
     span_lat = max(lats.max() - lats.min(), 0.1)
     span_lon = max(lons.max() - lons.min(), 0.1)
     pad_lat  = span_lat * 0.15
@@ -537,32 +531,26 @@ def build_track_map(df, meta):
     lon_min = lons.min() - pad_lon;  lon_max = lons.max() + pad_lon
     lat_min = lats.min() - pad_lat;  lat_max = lats.max() + pad_lat
 
-    # Taille fixe de la figure en pouces (26 cm × 17 cm = zone utile A4 paysage)
     FIG_W_IN = 26.0 / 2.54
     FIG_H_IN = 17.0 / 2.54
     DPI      = 220
 
     fig, ax = plt.subplots(figsize=(FIG_W_IN, FIG_H_IN), dpi=DPI, facecolor="white")
 
-    # Aspect Mercator : adapter les limites pour remplir exactement le rectangle
     lat_c  = (lat_min + lat_max) / 2.0
-    merc   = 1.0 / math.cos(math.radians(lat_c))   # lon/lat ratio
+    merc   = 1.0 / math.cos(math.radians(lat_c))
 
-    # Span en degrés
     span_data_lon = lon_max - lon_min
     span_data_lat = lat_max - lat_min
 
-    # Ratio figure en unités lon-équivalentes
-    fig_ratio = FIG_W_IN / FIG_H_IN       # largeur/hauteur en pouces
-    data_ratio = (span_data_lon) / (span_data_lat * merc)
+    fig_ratio  = FIG_W_IN / FIG_H_IN
+    data_ratio = span_data_lon / (span_data_lat * merc)
 
     if data_ratio > fig_ratio:
-        # Limité par la largeur → agrandir la hauteur en lat
         needed_lat = span_data_lon / (fig_ratio * merc)
         extra = (needed_lat - span_data_lat) / 2.0
         lat_min -= extra; lat_max += extra
     else:
-        # Limité par la hauteur → agrandir la largeur en lon
         needed_lon = span_data_lat * merc * fig_ratio
         extra = (needed_lon - span_data_lon) / 2.0
         lon_min -= extra; lon_max += extra
@@ -635,9 +623,7 @@ def build_track_map(df, meta):
 
     ax.set_xlim(lon_min, lon_max)
     ax.set_ylim(lat_min, lat_max)
-    # Pas de set_aspect — on gère manuellement les limites pour remplir le rectangle
     ax.set_aspect("auto")
-
     ax.grid(True, linewidth=0.25, color="#666666", alpha=0.3, linestyle="--", zorder=0)
 
     from matplotlib.ticker import FuncFormatter
@@ -676,7 +662,6 @@ def build_track_map(df, meta):
 
     plt.tight_layout(pad=0.3)
 
-    # Export PNG à 300 DPI — taille fixe en points ReportLab
     DPI_OUT = 300
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=DPI_OUT, bbox_inches="tight", facecolor="white")
@@ -692,7 +677,6 @@ def build_track_map(df, meta):
     rl_w = px_w * pt_per_px
     rl_h = px_h * pt_per_px
 
-    # Zone maximale A4 paysage avec marges
     max_w = 26.5 * cm
     max_h = 17.0 * cm
 
@@ -705,7 +689,7 @@ def build_track_map(df, meta):
 
 
 # =========================================================
-# COULEURS EVENTS
+# EVENT COLOURS
 # =========================================================
 
 NAV_EVENTS     = {"MAIN","JIB","STAYSAIL","STORMJIB","SPINNAKER","SEA","DESSAL","ARRIVAL","OTHER"}
@@ -727,13 +711,13 @@ def event_color(etype):
 
 
 # =========================================================
-# HELPERS PDF
+# PDF HELPERS
 # =========================================================
 
 HEADER_COLOR    = colors.HexColor("#1a3a5c")
 ALT_COLOR       = colors.HexColor("#eaf0f8")
-COLOR_HIGHLIGHT = colors.HexColor("#fff9c4")   # jaune clair — max dans hourly log
-COLOR_ENG_LAST  = colors.HexColor("#f8d7da")   # rouge clair — dernière heure moteur
+COLOR_HIGHLIGHT = colors.HexColor("#fff9c4")
+COLOR_ENG_LAST  = colors.HexColor("#f8d7da")
 
 
 def base_table_style(n_rows):
@@ -779,7 +763,6 @@ def build_hourly_slots(first_dt, last_dt):
     slots = []; t = pd.Timestamp(first_dt); end = pd.Timestamp(last_dt)
     while t <= end:
         slots.append(t); t += pd.Timedelta(hours=1)
-    # Ajouter le dernier point si != dernier slot
     last_ts = pd.Timestamp(last_dt)
     if slots and slots[-1] < last_ts:
         slots.append(last_ts)
@@ -798,7 +781,7 @@ def science_str_from_row(r):
 
 
 # =========================================================
-# PRE-CALCUL VECTORISE
+# PRE-COMPUTE SLOT STATS
 # =========================================================
 
 def precompute_slot_stats(df2, hourly_slots):
@@ -823,7 +806,7 @@ def precompute_slot_stats(df2, hourly_slots):
 
     result = {}
 
-    for i, (slot, slot_ns) in enumerate(zip(hourly_slots, slots_ns)):
+    for slot, slot_ns in zip(hourly_slots, slots_ns):
         i_lo = np.searchsorted(ts_ns, slot_ns - half_min, side="left")
         i_hi = np.searchsorted(ts_ns, slot_ns + half_min, side="right")
 
@@ -900,6 +883,38 @@ def precompute_event_instants(df2, ev_timestamps):
 
 
 # =========================================================
+# ELAPSED TIME FROM FIRST SOG > 1 kn TO LAST FIX
+# =========================================================
+
+def compute_navigation_elapsed(df2):
+    """
+    Returns (elapsed_str, avg_sog_str).
+    Elapsed = time from first fix where SOG > 1 kn to the last fix in the file.
+    This excludes time in port / at anchor at the start of the log.
+    """
+    if df2.empty or "SOG_RMC" not in df2.columns:
+        return "-", "-"
+    try:
+        sailing = df2[df2["SOG_RMC"] > 1.0].dropna(subset=["datetime"])
+        if sailing.empty:
+            return "-", "-"
+        t_start = sailing["datetime"].min()
+        t_end   = df2["datetime"].max()
+        if pd.isnull(t_start) or pd.isnull(t_end) or t_end <= t_start:
+            return "-", "-"
+        elapsed = t_end - t_start
+        elapsed_str = elapsed_dhms(elapsed)
+
+        # Average SOG computed only over sailing rows (SOG > 1 kn)
+        avg_sog = sailing["SOG_RMC"].mean()
+        avg_sog_str = f"{avg_sog:.2f} kn" if not np.isnan(avg_sog) else "-"
+        return elapsed_str, avg_sog_str
+    except Exception as e:
+        print(f"  [WARN] elapsed time: {e}")
+        return "-", "-"
+
+
+# =========================================================
 # PDF LOGBOOK
 # =========================================================
 
@@ -920,7 +935,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
 
     content = []
 
-    # --- TITRE ---
+    # --- TITLE ---
     title = "NAVIGATION LOGBOOK" + ("  —  LOG IN PROGRESS" if in_progress else "")
     content.append(Paragraph(title, styles["Title"]))
     content.append(Spacer(1, 6))
@@ -929,10 +944,9 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         styles["Normal"]))
     content.append(Spacer(1, 10))
 
-    # --- FICHE VOYAGE ---
+    # --- VOYAGE SUMMARY CARD ---
     arrival_str = meta.get("arrival","") or ("IN PROGRESS" if in_progress else "—")
 
-    # Fuel : s'assurer qu'il n'y a qu'un seul %
     fuel_raw = meta.get("fuel_pct","") or "—"
     if fuel_raw != "—":
         fuel_raw = fuel_raw.replace("%","").strip()
@@ -940,13 +954,16 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     else:
         fuel_str = "—"
 
+    route_type_str = meta.get("route_type","") or "—"
+
     fiche_data = [
-        ["DATE",        meta.get("date_depart","—"),  "SKIPPER",    meta.get("skipper","—")],
-        ["CREW",        meta.get("crew","—"),          "FUEL",       fuel_str],
-        ["DEPARTURE",   meta.get("departure","—"),     "LAT. DEST.", meta.get("destination_lat","—")],
-        ["ARRIVAL",     arrival_str,                   "LON. DEST.", meta.get("destination_lon","—")],
+        ["DATE",        meta.get("date_depart","—"),  "SKIPPER",      meta.get("skipper","—")],
+        ["CREW",        meta.get("crew","—"),          "FUEL",         fuel_str],
+        ["DEPARTURE",   meta.get("departure","—"),     "LAT. DEST.",   meta.get("destination_lat","—")],
+        ["ARRIVAL",     arrival_str,                   "LON. DEST.",   meta.get("destination_lon","—")],
         ["DESTINATION", meta.get("destination","—"),   "INIT. DIST.",
          (meta.get("initial_dist_nm","—") or "—").replace("nm","").strip() + " nm"],
+        ["DIRECT LEG",  route_type_str,                "SEA STATE",    meta.get("sea_start","—")],
     ]
 
     style_fiche_lbl = ParagraphStyle("FicheLbl", parent=styles["Normal"],
@@ -977,12 +994,110 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         ("LEFTPADDING",   (0,0), (-1,-1), 6), ("RIGHTPADDING",  (0,0), (-1,-1), 6),
         ("TOPPADDING",    (0,0), (-1,-1), 4), ("BOTTOMPADDING", (0,0), (-1,-1), 4),
     ])
+    # Original voyage card — full width, unchanged
     tf = Table(fiche_display, colWidths=[3.0*cm, 8.5*cm, 3.0*cm, 8.5*cm])
     tf.setStyle(fiche_style)
     content.append(tf)
+    content.append(Spacer(1, 6))
+
+    # --- BOAT CHECK + ENGINE CHECK — side by side below the voyage card ---
+    def ok_color(val):
+        return colors.white
+
+    style_chk_lbl = ParagraphStyle("ChkLbl", parent=styles["Normal"],
+        fontSize=7, textColor=colors.white, fontName="Helvetica-Bold")
+    style_chk_val = ParagraphStyle("ChkVal", parent=styles["Normal"], fontSize=7)
+    style_chk_hdr = ParagraphStyle("ChkHdr", parent=styles["Normal"],
+        fontSize=8, textColor=colors.white, fontName="Helvetica-Bold")
+
+    COLOR_BOAT_HDR = colors.HexColor("#2e6da4")
+    COLOR_ENG_HDR  = HEADER_COLOR
+
+    def _make_check_block(title, items, hdr_color, lbl_w, val_w):
+        """Returns a Table with a merged header row then label|value rows."""
+        n_cols = 2
+        # Header row spanning both columns
+        header_row = [Paragraph(f"<b>{title}</b>", style_chk_hdr), ""]
+        data_rows  = [
+            [Paragraph(f"<b>{lbl}</b>", style_chk_lbl),
+             Paragraph(str(val) if val else "—", style_chk_val)]
+            for lbl, val in items
+        ]
+        all_rows = [header_row] + data_rows
+        n = len(all_rows)
+
+        style_cmds = [
+            # header
+            ("BACKGROUND",  (0,0), (-1,0),  hdr_color),
+            ("SPAN",        (0,0), (-1,0)),
+            ("ALIGN",       (0,0), (-1,0),  "CENTER"),
+            # label column
+            ("BACKGROUND",  (0,1), (0,-1),  hdr_color),
+            # value cells default white
+            ("BACKGROUND",  (1,1), (1,-1),  colors.white),
+            ("FONTNAME",    (0,0), (-1,-1), "Helvetica"),
+            ("FONTSIZE",    (0,0), (-1,-1), 7),
+            ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
+            ("GRID",        (0,0), (-1,-1), 0.4, colors.HexColor("#c0cfe0")),
+            ("LEFTPADDING", (0,0), (-1,-1), 5),
+            ("RIGHTPADDING",(0,0), (-1,-1), 5),
+            ("TOPPADDING",  (0,0), (-1,-1), 2),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 2),
+        ]
+        # Colour value cells OK/NOK
+        for ri, (_, val) in enumerate(items):
+            style_cmds.append(("BACKGROUND", (1, ri+1), (1, ri+1), ok_color(val)))
+
+        tbl = Table(all_rows, colWidths=[lbl_w, val_w])
+        tbl.setStyle(TableStyle(style_cmds))
+        return tbl
+
+    boat_items = [
+        ("Bilges dry",       meta.get("bilges_dry","")),
+        ("Portholes closed", meta.get("portholes_closed","")),
+        ("Boat stowed",      meta.get("boat_stowed","")),
+    ]
+    # Fuel and oil levels are numeric (e.g. "75 %"), format them with unit
+    def _pct(raw):
+        v = str(raw).replace("%","").strip()
+        try: return f"{float(v):.0f} %"
+        except: return str(raw) if raw else "—"
+
+    eng_items = [
+        ("Fuel level",         _pct(meta.get("fuel_pct",""))),
+        ("Fuel pre-filter",    meta.get("fuel_pre_filter","")),
+        ("Sea water filter",   meta.get("seawater_filter","")),
+        ("Engine bilge",       meta.get("engine_bilge","")),
+        ("Oil level",          _pct(meta.get("oil_level",""))),
+        ("Coolant",            meta.get("coolant","")),
+        ("Belt tension",       meta.get("belt","")),
+        ("Sea cock + ignition",meta.get("seacock","")),
+    ]
+
+    boat_tbl = _make_check_block("BOAT CHECK",   boat_items, COLOR_BOAT_HDR, 3.8*cm, 1.4*cm)
+    eng_tbl  = _make_check_block("ENGINE CHECK", eng_items,  COLOR_ENG_HDR,  4.2*cm, 1.4*cm)
+
+    # Place them side by side, left-aligned, with a small gap
+    GAP = 1.0*cm
+    BOAT_W = 3.8*cm + 1.4*cm   # 5.2 cm
+    ENG_W  = 4.2*cm + 1.4*cm   # 5.6 cm
+
+    checks_row = Table(
+        [[boat_tbl, Spacer(GAP, 1), eng_tbl]],
+        colWidths=[BOAT_W, GAP, ENG_W]
+    )
+    checks_row.setStyle(TableStyle([
+        ("VALIGN",       (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING",  (0,0), (-1,-1), 0),
+        ("RIGHTPADDING", (0,0), (-1,-1), 0),
+        ("TOPPADDING",   (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
+    ]))
+
+    content.append(checks_row)
     content.append(Spacer(1, 14))
 
-    # --- df2 indexé et trié ---
+    # --- sorted df2 ---
     df2 = pd.DataFrame()
     if "datetime" in df.columns and not df.empty:
         df2 = df.dropna(subset=["datetime"]).copy()
@@ -993,13 +1108,12 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     last_dt      = df2["datetime"].max() if not df2.empty else None
     hourly_slots = build_hourly_slots(first_dt, last_dt)
 
-    # --- Distance initiale (pour remaining) ---
     try:
         init_dist_nm = float(str(meta.get("initial_dist_nm","") or "").replace("nm","").strip() or "nan")
     except:
         init_dist_nm = np.nan
 
-    # --- Distance cumulée vectorisée ---
+    # Cumulative distance
     miles_per_slot = {}
     if not df2.empty and hourly_slots:
         lats_v = df2["lat_raw"].values;  lons_v = df2["lon_raw"].values
@@ -1021,7 +1135,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
             if idx >= 0:
                 miles_per_slot[slot] = float(cum_nm[idx])
 
-    # --- Engine hours par slot ---
+    # Engine hours per slot
     engine_hours_by_slot = {}
     if not df_events.empty and "timestamp" in df_events.columns and "engine_hours" in df_events.columns:
         ev_eh = df_events.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
@@ -1032,7 +1146,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
             idx = np.searchsorted(eh_ts_ns, slot_ns, side="right") - 1
             engine_hours_by_slot[slot] = float(eh_vals[idx]) if idx >= 0 else 0.0
 
-    # --- État équipements par slot ---
+    # Equipment state per slot
     equipment_by_slot = {}
     if not df_events.empty and "timestamp" in df_events.columns:
         ev = df_events.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
@@ -1070,7 +1184,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
                 "science":"+".join(sci)   if sci   else "-",
             }
 
-    # --- Pré-calcul vectorisé des stats par slot ---
     slot_stats = precompute_slot_stats(df2, hourly_slots)
 
     # -------------------------------------------------------
@@ -1078,35 +1191,14 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     # -------------------------------------------------------
     content.append(Paragraph("HOURLY LOG", style_section))
 
-    # Colonnes : TIME, LAT, LON, ENGINE, SAILS, SEA, SCIENCE,
-    #            SOG, TWS, TWD, HDG, DIST CUM, DIST REM (+ %), ENG.H,
-    #            TWS moy, SOG moy, SOG max, TWS max
     CW = [
-        1.8*cm,  # 0  TIME
-        2.3*cm,  # 1  LAT
-        2.3*cm,  # 2  LON
-        1.3*cm,  # 3  ENGINE
-        2.4*cm,  # 4  SAILS
-        0.8*cm,  # 5  SEA
-        2.6*cm,  # 6  SCIENCE
-        1.2*cm,  # 7  SOG
-        1.2*cm,  # 8  TWS
-        1.2*cm,  # 9  TWD
-        1.2*cm,  # 10 HDG
-        1.4*cm,  # 11 DIST cum
-        1.9*cm,  # 12 DIST rem + %
-        1.3*cm,  # 13 ENG.H
-        1.4*cm,  # 14 TWS moy
-        1.4*cm,  # 15 SOG moy
-        1.4*cm,  # 16 SOG max
-        1.4*cm,  # 17 TWS max
+        1.8*cm, 2.3*cm, 2.3*cm, 1.3*cm, 2.4*cm, 0.8*cm, 2.6*cm,
+        1.2*cm, 1.2*cm, 1.2*cm, 1.2*cm, 1.4*cm, 1.9*cm, 1.3*cm,
+        1.4*cm, 1.4*cm, 1.4*cm, 1.4*cm,
     ]
 
-    # Indices des colonnes à surligner en jaune (max sur la traversée)
-    # TWS moy=14, SOG moy=15, SOG max=16, TWS max=17
     HIGHLIGHT_COLS = [14, 15, 16, 17]
-    # Indice colonne ENG.H = 13
-    ENG_H_COL = 13
+    ENG_H_COL      = 13
 
     if not df2.empty and hourly_slots:
 
@@ -1119,20 +1211,17 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
             "TWS\nmoy(kn)", "SOG\nmoy(kn)", "SOG\nmax(kn)", "TWS\nmax(kn)",
         ]
 
-        table_h = [header_h]
+        table_h  = [header_h]
         prev_date = None
+        col_values = {c: [] for c in HIGHLIGHT_COLS}
+        data_rows  = []
 
-        # Collecter les valeurs numériques pour trouver les max
-        col_values = {c: [] for c in HIGHLIGHT_COLS}  # {col_idx: [valeurs par ligne de données]}
-
-        data_rows = []
         for slot in hourly_slots:
             equip = equipment_by_slot.get(slot, {})
             miles = miles_per_slot.get(slot, 0.0)
             eh    = engine_hours_by_slot.get(slot, 0.0)
             st    = slot_stats.get(slot, {})
 
-            # Distance restante
             if not np.isnan(init_dist_nm):
                 remaining = max(init_dist_nm - miles, 0.0)
                 pct_done  = min(miles / init_dist_nm * 100.0, 100.0) if init_dist_nm > 0 else 0.0
@@ -1175,7 +1264,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
                 "row_vals": row_vals,
             })
 
-        # Calculer les max de chaque colonne highlight
         col_max = {}
         for c in HIGHLIGHT_COLS:
             vals = [v for v in col_values[c] if not np.isnan(v)]
@@ -1187,17 +1275,14 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         t_h = Table(table_h, colWidths=CW, repeatRows=1)
         ts_style = base_table_style(len(table_h))
 
-        # Appliquer le jaune sur les max et le rouge sur la dernière ENG.H
-        last_data_row_idx = len(data_rows)  # index 1-based dans table_h
+        last_data_row_idx = len(data_rows)
 
         for i, dr in enumerate(data_rows):
-            ri = i + 1  # row index dans table_h (1 = première ligne de données)
-            # Jaune clair sur les colonnes max
+            ri = i + 1
             for c in HIGHLIGHT_COLS:
                 v = dr["row_vals"].get(c, np.nan)
                 if col_max.get(c) is not None and not np.isnan(v) and v == col_max[c]:
                     ts_style.append(("BACKGROUND", (c, ri), (c, ri), COLOR_HIGHLIGHT))
-            # Rouge sur la dernière case ENG.H
             if ri == last_data_row_idx:
                 ts_style.append(("BACKGROUND", (ENG_H_COL, ri), (ENG_H_COL, ri), COLOR_ENG_LAST))
 
@@ -1286,7 +1371,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         content.append(Paragraph("No events recorded.", styles["Normal"]))
 
     # -------------------------------------------------------
-    # VOYAGE STATISTICS — réorganisé
+    # VOYAGE STATISTICS
     # -------------------------------------------------------
     content.append(Spacer(1, 14))
     content.append(Paragraph("VOYAGE STATISTICS", style_section))
@@ -1306,7 +1391,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     tws_max = df["TWS"].max() if "TWS" in df.columns else np.nan
     tws_max_ts,_,_ = ts_of_max("TWS")
 
-    # Max SOG sur 1h (fenêtre glissante 1h, anciennement "best dist 1h")
+    # Best distance in 1 h sliding window
     sog_1h_nm = np.nan; sog_1h_ts = "-"
     if not df2.empty:
         try:
@@ -1335,7 +1420,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
                 sog_1h_ts = best_start.strftime("%d/%m %H:%M") if best_start else "-"
         except: pass
 
-    # Max TWS sur 1h (rolling)
+    # Best TWS rolling mean
     tws_1h = np.nan; tws_1h_ts = "-"
     if "TWS" in df.columns and not df.empty:
         try:
@@ -1345,7 +1430,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
                 tws_1h_ts=pd.to_datetime(df.loc[idx_b,"datetime"]).strftime("%d/%m %H:%M")
         except: pass
 
-    # Distance totale
+    # Total distance
     total_nm = np.nan
     if not df2.empty:
         try:
@@ -1355,15 +1440,8 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
             total_nm = float(np.sum(np.where(segs > 1, 0.0, segs)))
         except: pass
 
-    elapsed_str="-"; avg_sog_str="-"
-    if not df2.empty:
-        try:
-            t_s=df2["datetime"].min(); t_e=df2["datetime"].max()
-            elapsed=t_e-t_s; elapsed_str=elapsed_dhms(elapsed)
-            total_h=elapsed.total_seconds()/3600.0
-            if not np.isnan(total_nm) and total_h>0:
-                avg_sog_str=f"{total_nm/total_h:.2f} kn"
-        except: pass
+    # Elapsed time: first SOG>1kn → last fix
+    elapsed_str, avg_sog_str = compute_navigation_elapsed(df2)
 
     avg_twd_str="-"
     if "TWD" in df.columns:
@@ -1400,20 +1478,17 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
             return f"{v:.{decimals}f} {unit}".strip()
         except: return "—"
 
-    # Colonnes réorganisées :
-    # Gauche : AVG SOG | Max SOG/1h | Max SOG | Max HEEL | Elapsed time
-    # Droite : AVG TWS | Max TWS/1h | Max TWS | Total dist | (vide)
     stats_rows = [
-        ["AVG SOG",       avg_sog_str,
-         "AVG TWS",       avg_tws_str],
-        ["MAX SOG / 1H",  f"{sv(sog_1h_nm,'nm',1)}  @{sog_1h_ts}",
-         "MAX TWS / 1H",  f"{sv(tws_1h,'kn')}  @{tws_1h_ts}"],
-        ["MAX SOG",       f"{sv(sog_max,'kn')}  @{sog_max_ts}",
-         "MAX TWS",       f"{sv(tws_max,'kn')}  @{tws_max_ts}"],
-        ["MAX HEEL",      heel_max_str,
-         "TOTAL DIST.",   sv(total_nm,"nm",1)],
-        ["ELAPSED TIME",  elapsed_str,
-         "ENGINE HOURS",  eng_h_str],
+        ["AVG SOG (sailing)",  avg_sog_str,
+         "AVG TWS",            avg_tws_str],
+        ["MAX SOG / 1H",       f"{sv(sog_1h_nm,'nm',1)}  @{sog_1h_ts}",
+         "MAX TWS / 1H",       f"{sv(tws_1h,'kn')}  @{tws_1h_ts}"],
+        ["MAX SOG",            f"{sv(sog_max,'kn')}  @{sog_max_ts}",
+         "MAX TWS",            f"{sv(tws_max,'kn')}  @{tws_max_ts}"],
+        ["MAX HEEL",           heel_max_str,
+         "TOTAL DIST.",        sv(total_nm,"nm",1)],
+        ["ELAPSED (sailing)",  elapsed_str,
+         "ENGINE HOURS",       eng_h_str],
     ]
 
     style_sl = ParagraphStyle("SL", parent=styles["Normal"], fontSize=7,
@@ -1454,7 +1529,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     content.append(ts_tbl)
     content.append(Spacer(1, 16))
 
-    # --- TRACK CHART (taille fixe) ---
+    # --- TRACK CHART ---
     map_img = build_track_map(df, meta)
     if map_img is not None:
         content.append(Paragraph("TRACK CHART", style_section))
@@ -1504,7 +1579,7 @@ for log_dir_name in os.listdir(base_folder):
 
     df = df.sort_values("datetime").reset_index(drop=True)
 
-    # XLSX — rééchantillonné à 1 ligne/minute
+    # XLSX — 1 line per minute
     df_xlsx = df.copy()
     if "datetime" in df_xlsx.columns and not df_xlsx.empty:
         try:
@@ -1517,7 +1592,7 @@ for log_dir_name in os.listdir(base_folder):
             print(f"  [WARN] resample XLSX: {e}")
             df_xlsx = df
     df_xlsx.to_excel(out_xlsx, index=False)
-    print(f"  XLSX : {out_xlsx}  ({len(df_xlsx)} lignes)")
+    print(f"  XLSX : {out_xlsx}  ({len(df_xlsx)} rows)")
 
     df_01nm = resample_every_0_1nm(df, df_events=df_events)
     df_01nm.to_csv(out_csv, index=False)

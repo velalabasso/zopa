@@ -55,52 +55,31 @@ ctd_keel_state      = "OFF"
 ctd_profile_state   = "OFF"
 ctd_intercomp_state = "OFF"
 
-# Flag d'arrêt propre — positionné par le handler SIGINT
+# Flag for clean shutdown — set by SIGINT handler
 _shutdown_requested = False
 
-# Garde : évite de déclencher la clôture deux fois si on reste < 1 NM
-_arrival_triggered = False
-
 # =========================================================
-# SIGNAL HANDLER — Ctrl+C propre, quelle que soit la phase
+# SIGNAL HANDLER — clean Ctrl+C at any phase
 # =========================================================
 
 def _sigint_handler(signum, frame):
-    """
-    Intercepte Ctrl+C à n'importe quel moment (connect, sleep, recv…).
-    Positionne le flag d'arrêt et demande le port d'arrivée.
-    Le thread principal détecte le flag et clôture proprement.
-    """
     global _shutdown_requested
-
-    # Éviter une double demande si Ctrl+C est pressé deux fois
     if _shutdown_requested:
-        print("\n(interruption déjà en cours…)")
+        print("\n(shutdown already in progress…)")
         return
-
     _shutdown_requested = True
-
-    print("\n\n⚓  ARRÊT DEMANDÉ")
+    print("\n\n⚓  SHUTDOWN REQUESTED")
     _ask_arrival_and_close()
 
 
 def _ask_arrival_and_close(default_port=""):
-    """
-    Demande le port d'arrivée (avec valeur par défaut si fournie),
-    écrit les events de clôture, compresse le fichier et quitte.
-    """
-    global event_log_file, distance_traveled_nm, _arrival_triggered
-
-    _arrival_triggered = True   # bloquer un double déclenchement
+    global event_log_file, distance_traveled_nm
 
     try:
-        if default_port:
-            prompt = f"Port d'arrivée [{default_port}] : "
-        else:
-            prompt = "Port d'arrivée : "
+        prompt = f"Arrival port [{default_port}] : " if default_port else "Arrival port : "
         arrival = input(prompt).strip()
         if not arrival:
-            arrival = default_port   # [Entrée] seul → on accepte la destination
+            arrival = default_port
     except (EOFError, KeyboardInterrupt):
         arrival = default_port
 
@@ -109,18 +88,16 @@ def _ask_arrival_and_close(default_port=""):
     write_event(f"TOTAL TRAVELED : {distance_traveled_nm:.1f} nm")
 
     if event_log_file and os.path.exists(event_log_file):
-        print("Compression du log…")
+        print("Compressing log…")
         compress_file(event_log_file)
-        print("Fichier compressé.")
+        print("File compressed.")
     else:
-        print("(aucun fichier log à compresser)")
+        print("(no log file to compress)")
 
-    print("Au revoir.")
-    # Sortie propre depuis n'importe quel thread
+    print("Goodbye.")
     os._exit(0)
 
 
-# Enregistrement du handler AVANT tout le reste
 signal.signal(signal.SIGINT, _sigint_handler)
 
 # =========================================================
@@ -128,15 +105,15 @@ signal.signal(signal.SIGINT, _sigint_handler)
 # =========================================================
 
 def connect_wifi():
-    print("Connexion WiFi…")
+    print("Connecting to WiFi…")
     try:
         subprocess.run(
             ["nmcli", "dev", "wifi", "connect", WIFI_SSID, "password", WIFI_PASSWORD],
             check=True
         )
-        print("WiFi connecté.")
+        print("WiFi connected.")
     except Exception as e:
-        print(f"Erreur WiFi : {e}")
+        print(f"WiFi error: {e}")
 
 # =========================================================
 # COMPRESSION
@@ -148,17 +125,13 @@ def compress_file(file_path):
         with gzip.open(gz_path, "wb") as f_out:
             shutil.copyfileobj(f_in, f_out)
     os.remove(file_path)
-    print(f"Compressé : {gz_path}")
+    print(f"Compressed: {gz_path}")
 
 # =========================================================
 # FORMAT DEG-MIN
 # =========================================================
 
 def parse_deg_min(text):
-    """
-    Accepte :
-      43°21.456'N  |  43 21.456 N  |  4321.456N  |  43.3576
-    """
     text = text.strip().upper()
     direction = None
     for d in ["N", "S", "E", "W"]:
@@ -172,7 +145,7 @@ def parse_deg_min(text):
 
     if len(parts) == 1:
         val = float(parts[0])
-        if val > 360:                   # format DDDMM.mmm
+        if val > 360:
             deg = int(val // 100)
             dec = deg + (val - deg * 100) / 60.0
         else:
@@ -180,7 +153,7 @@ def parse_deg_min(text):
     elif len(parts) == 2:
         dec = int(float(parts[0])) + float(parts[1]) / 60.0
     else:
-        raise ValueError(f"Format non reconnu : {text}")
+        raise ValueError(f"Unrecognised format: {text}")
 
     if direction in ["S", "W"]:   dec = -abs(dec)
     elif direction in ["N", "E"]: dec =  abs(dec)
@@ -258,77 +231,149 @@ def write_event(event):
             with open(event_log_file, "a") as f:
                 f.write(line + "\n")
     except Exception as e:
-        print(f"Erreur event : {e}")
+        print(f"Event write error: {e}")
 
 # =========================================================
-# NAVIGATION SETUP
+# SETUP
 # =========================================================
 
 def navigation_setup():
-    global motor_state, dessal_state, sea_state, ctd_keel_state
+    global sea_state, ctd_keel_state
 
+    # ---------------------------------------------------
+    # PART 1 — NAVIGATION
+    # ---------------------------------------------------
     print("\n===================================")
-    print("        START NAVIGATION")
+    print("       PART 1 — NAVIGATION")
     print("===================================\n")
 
     skipper     = input("Skipper : ").strip()
     crew        = input("Crew : ").strip()
-    departure   = input("Departure : ").strip()
-    destination = input("Destination : ").strip()
+    departure   = input("Departure port : ").strip()
+    destination = input("Destination port : ").strip()
 
-    print("\nFormats acceptés pour lat/lon :")
+    print("\nAccepted lat/lon formats:")
     print("  43°21.456'N   |   43 21.456 N   |   4321.456N   |   43.3576")
+
     while True:
         try:
-            raw = input("Destination latitude  (ex: 43 21.456 N) : ").strip()
+            raw = input("Destination latitude  (e.g. 43 21.456 N) : ").strip()
             destination_lat = parse_deg_min(raw)
             print(f"  -> {decimal_to_deg_min(destination_lat, is_lon=False)}")
             break
         except ValueError as e:
-            print(f"  Format non reconnu ({e}), réessayez.")
+            print(f"  Unrecognised format ({e}), try again.")
 
     while True:
         try:
-            raw = input("Destination longitude (ex: 005 22.123 E) : ").strip()
+            raw = input("Destination longitude (e.g. 005 22.123 E) : ").strip()
             destination_lon = parse_deg_min(raw)
             print(f"  -> {decimal_to_deg_min(destination_lon, is_lon=True)}")
             break
         except ValueError as e:
-            print(f"  Format non reconnu ({e}), réessayez.")
+            print(f"  Unrecognised format ({e}), try again.")
 
-    print()
+    # Direct leg or waypoints?
+    direct_str = input("\nDirect leg to destination? (Y/N) : ").strip().upper()
+    direct_leg = (direct_str == "Y")
+
+    manual_distance_nm = None
+    if not direct_leg:
+        while True:
+            try:
+                manual_distance_nm = float(input("Total distance to sail (nm) : ").strip())
+                if manual_distance_nm <= 0: raise ValueError("must be > 0")
+                break
+            except ValueError as e:
+                print(f"  Invalid value ({e}), try again.")
+
+    sea_val = input("\nSea state (0-9) : ").strip()
+
+    # ---------------------------------------------------
+    # PART 2 — ENGINE CONTROL CHECK
+    # ---------------------------------------------------
+    print("\n===================================")
+    print("    PART 2 — ENGINE CONTROL CHECK")
+    print("===================================\n")
+
+    def ask_yn(question):
+        while True:
+            ans = input(f"{question} (Y/N) : ").strip().upper()
+            if ans in ("Y", "N"):
+                return ans == "Y"
+            print("  Please answer Y or N.")
+
     while True:
         try:
-            fuel_pct = float(input("Gasoil (%) : ").strip())
-            if not (0 <= fuel_pct <= 100): raise ValueError("hors [0-100]")
+            fuel_pct = float(input("Fuel level (0-100 %) : ").strip())
+            if not (0 <= fuel_pct <= 100): raise ValueError("out of [0-100]")
             break
         except ValueError as e:
-            print(f"  Valeur invalide ({e}), réessayez.")
+            print(f"  Invalid value ({e}), try again.")
 
-    print()
-    motor_state  = "ON" if input("Engine ON ? (Y/N) : ").strip().upper() == "Y" else "OFF"
-    dessal_state = "ON" if input("Dessal ON ? (Y/N) : ").strip().upper() == "Y" else "OFF"
-    sea_state    = input("Sea state (0-9) : ").strip()
+    prefil_ok   = ask_yn("Fuel pre-filter clean")
+    seawater_ok = ask_yn("Sea water filter clean")
+    bilge_ok    = ask_yn("Engine bilge dry and clean")
 
-    print("\n-----------------------------------")
-    print("         SCIENCE SETUP")
-    print("-----------------------------------\n")
-    ctd_keel_state = "ON" if input("CTD keel ON ? (Y/N) : ").strip().upper() == "Y" else "OFF"
+    while True:
+        try:
+            oil_pct = float(input("Oil level (0-100 %) : ").strip())
+            if not (0 <= oil_pct <= 100): raise ValueError("out of [0-100]")
+            break
+        except ValueError as e:
+            print(f"  Invalid value ({e}), try again.")
+
+    coolant_ok  = ask_yn("Coolant level OK")
+    belt_ok     = ask_yn("Belt tension OK (~1 cm deflection under thumb pressure)")
+    seacock_ok  = ask_yn("Sea cock open and ignition on")
+
+    # ---------------------------------------------------
+    # PART 3 — BOAT CONTROL CHECK
+    # ---------------------------------------------------
+    print("\n===================================")
+    print("    PART 3 — BOAT CONTROL CHECK")
+    print("===================================\n")
+
+    bilges_dry   = ask_yn("Bilges dry")
+    portholes_ok = ask_yn("Portholes closed")
+    boat_stowed  = ask_yn("Boat stowed and secured")
+
+    # ---------------------------------------------------
+    # PART 4 — SCIENCE
+    # ---------------------------------------------------
+    print("\n===================================")
+    print("         PART 4 — SCIENCE")
+    print("===================================\n")
+
+    ctd_keel = "ON" if input("CTD keel ON? (Y/N) : ").strip().upper() == "Y" else "OFF"
 
     print("\n===================================\n")
 
     return {
-        "skipper"         : skipper,
-        "crew"            : crew,
-        "fuel_pct"        : fuel_pct,
-        "departure"       : departure,
-        "destination"     : destination,
-        "destination_lat" : destination_lat,
-        "destination_lon" : destination_lon,
-        "engine"          : motor_state,
-        "dessal"          : dessal_state,
-        "sea"             : sea_state,
-        "ctd_keel"        : ctd_keel_state,
+        "skipper"          : skipper,
+        "crew"             : crew,
+        "departure"        : departure,
+        "destination"      : destination,
+        "destination_lat"  : destination_lat,
+        "destination_lon"  : destination_lon,
+        "direct_leg"       : direct_leg,
+        "manual_distance_nm": manual_distance_nm,
+        "sea"              : sea_val,
+        # Engine check
+        "fuel_pct"         : fuel_pct,
+        "prefil_ok"        : prefil_ok,
+        "seawater_ok"      : seawater_ok,
+        "bilge_ok"         : bilge_ok,
+        "oil_pct"          : oil_pct,
+        "coolant_ok"       : coolant_ok,
+        "belt_ok"          : belt_ok,
+        "seacock_ok"       : seacock_ok,
+        # Boat check
+        "bilges_dry"       : bilges_dry,
+        "portholes_ok"     : portholes_ok,
+        "boat_stowed"      : boat_stowed,
+        # Science
+        "ctd_keel"         : ctd_keel,
     }
 
 # =========================================================
@@ -346,19 +391,20 @@ def terminal_event_listener():
 
     def print_help():
         print("\n===================================")
-        print("           COMMANDES")
+        print("            COMMANDS")
         print("===================================")
         print("\n--- Navigation ---")
         print(" engine on/off")
         print(" dessal on/off")
         print(" spinnaker on/off")
-        print(" main on         (demande le reef)")
+        print(" main on         (asks for reef)")
         print(" main off")
         print(" jib on/off")
         print(" staysail on/off")
         print(" stormjib on/off")
         print(" sea X           (0-9)")
-        print(" comment: texte libre")
+        print(" comment: free text")
+        print(" state           (show current state)")
         print("\n--- Science ---")
         print(" hypernet on/off")
         print(" net on/off")
@@ -366,15 +412,38 @@ def terminal_event_listener():
         print(" ctd keel on/off")
         print(" ctd profile on/off")
         print(" ctd intercomp on/off")
-        print("\n--- Aide ---")
+        print("\n--- Help ---")
         print(" help")
+        print("===================================\n")
+
+    def print_state():
+        print("\n===================================")
+        print("          CURRENT STATE")
+        print("===================================")
+        print("--- Navigation ---")
+        print(f" Engine    : {motor_state}")
+        print(f" Dessal    : {dessal_state}")
+        print(f" Main      : {main_state}" + (f"  (reef {main_reef})" if main_state == "ON" else ""))
+        print(f" Jib       : {jib_state}")
+        print(f" Staysail  : {staysail_state}")
+        print(f" Storm jib : {stormjib_state}")
+        print(f" Spinnaker : {spinnaker_state}")
+        print(f" Sea state : {sea_state}")
+        print("--- Science ---")
+        print(f" Hypernet    : {hypernet_state}")
+        print(f" Net         : {net_state}")
+        print(f" Inline      : {inline_state}")
+        print(f" CTD keel    : {ctd_keel_state}")
+        print(f" CTD profile : {ctd_profile_state}")
+        print(f" CTD intercomp: {ctd_intercomp_state}")
         print("===================================\n")
 
     print_help()
 
     while True:
         try:
-            cmd = input("> ").strip().lower()
+            # Read input silently — no prompt displayed, output appears only on Enter
+            cmd = input("").strip().lower()
 
             if   cmd == "engine on":     motor_state = "ON";      write_event("ENGINE ON")
             elif cmd == "engine off":    motor_state = "OFF";     write_event("ENGINE OFF")
@@ -403,40 +472,42 @@ def terminal_event_listener():
                 if len(parts) == 2 and parts[1].isdigit():
                     sea_state = parts[1]; write_event(f"SEA {parts[1]}")
                 else:
-                    print("Commande inconnue.")
+                    print("Unknown command.")
 
-            elif cmd == "ctd keel on":       ctd_keel_state = "ON";       write_event("CTD KEEL ON")
-            elif cmd == "ctd keel off":      ctd_keel_state = "OFF";      write_event("CTD KEEL OFF")
-            elif cmd == "ctd profile on":    ctd_profile_state = "ON";    write_event("CTD PROFILE ON")
-            elif cmd == "ctd profile off":   ctd_profile_state = "OFF";   write_event("CTD PROFILE OFF")
-            elif cmd == "ctd intercomp on":  ctd_intercomp_state = "ON";  write_event("CTD INTERCOMP ON")
-            elif cmd == "ctd intercomp off": ctd_intercomp_state = "OFF"; write_event("CTD INTERCOMP OFF")
+            elif cmd == "ctd keel on":        ctd_keel_state = "ON";        write_event("CTD KEEL ON")
+            elif cmd == "ctd keel off":       ctd_keel_state = "OFF";       write_event("CTD KEEL OFF")
+            elif cmd == "ctd profile on":     ctd_profile_state = "ON";     write_event("CTD PROFILE ON")
+            elif cmd == "ctd profile off":    ctd_profile_state = "OFF";    write_event("CTD PROFILE OFF")
+            elif cmd == "ctd intercomp on":   ctd_intercomp_state = "ON";   write_event("CTD INTERCOMP ON")
+            elif cmd == "ctd intercomp off":  ctd_intercomp_state = "OFF";  write_event("CTD INTERCOMP OFF")
 
-            elif cmd == "hypernet on":  hypernet_state = "ON";  write_event("HYPERNET ON")
-            elif cmd == "hypernet off": hypernet_state = "OFF"; write_event("HYPERNET OFF")
-            elif cmd == "net on":       net_state = "ON";       write_event("NET ON")
-            elif cmd == "net off":      net_state = "OFF";      write_event("NET OFF")
-            elif cmd == "inline on":    inline_state = "ON";    write_event("INLINE ON")
-            elif cmd == "inline off":   inline_state = "OFF";   write_event("INLINE OFF")
+            elif cmd == "hypernet on":   hypernet_state = "ON";  write_event("HYPERNET ON")
+            elif cmd == "hypernet off":  hypernet_state = "OFF"; write_event("HYPERNET OFF")
+            elif cmd == "net on":        net_state = "ON";       write_event("NET ON")
+            elif cmd == "net off":       net_state = "OFF";      write_event("NET OFF")
+            elif cmd == "inline on":     inline_state = "ON";    write_event("INLINE ON")
+            elif cmd == "inline off":    inline_state = "OFF";   write_event("INLINE OFF")
 
             elif cmd.startswith("comment:"):
                 write_event("COMMENT : " + cmd.replace("comment:", "").strip())
+
+            elif cmd == "state":
+                print_state()
 
             elif cmd == "help":
                 print_help()
 
             elif cmd == "":
-                pass   # ligne vide ignorée silencieusement
+                pass   # silent blank line
 
             else:
-                print("Commande inconnue.")
+                print("Unknown command.")
 
         except EOFError:
-            # stdin fermé (ex. Ctrl+D) — on quitte le thread proprement
             break
         except Exception as e:
             if not _shutdown_requested:
-                print(f"Erreur terminal : {e}")
+                print(f"Terminal error: {e}")
 
 # =========================================================
 # MAIN
@@ -446,14 +517,18 @@ def main():
     global latest_fix, event_log_file
     global last_position
     global distance_traveled_nm, initial_distance_nm
+    global sea_state, ctd_keel_state
 
     connect_wifi()
     setup = navigation_setup()
 
+    sea_state      = setup["sea"]
+    ctd_keel_state = setup["ctd_keel"]
+
     threading.Thread(target=terminal_event_listener, daemon=True).start()
 
-    # ---------- attente du premier fix GPS ----------
-    print("En attente du fix GPS…")
+    # ---------- wait for first GPS fix ----------
+    print("Waiting for GPS fix…")
     while latest_fix is None and not _shutdown_requested:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -470,14 +545,22 @@ def main():
                 time.sleep(2)
 
     if _shutdown_requested:
-        return   # le handler a déjà tout géré
+        return
 
-    initial_distance_nm = haversine_nm(
+    # Distance to destination
+    calculated_distance_nm = haversine_nm(
         latest_fix["lat"], latest_fix["lon"],
         setup["destination_lat"], setup["destination_lon"]
     )
 
-    # ---------- création du fichier log ----------
+    if setup["direct_leg"]:
+        initial_distance_nm = calculated_distance_nm
+        dist_note = "direct leg (calculated from GPS fix)"
+    else:
+        initial_distance_nm = setup["manual_distance_nm"]
+        dist_note = f"manual entry (calculated: {calculated_distance_nm:.1f} nm)"
+
+    # ---------- create log file ----------
     ts     = latest_fix["datetime"].strftime("%Y%m%d_%H%M%S")
     rlat   = latest_fix["lat"]; rlon = latest_fix["lon"]
     ldir   = "N" if rlat >= 0 else "S"; alat = abs(rlat); dlt = int(alat); mlt = (alat-dlt)*60
@@ -487,10 +570,12 @@ def main():
     os.makedirs(ld, exist_ok=True)
     output_file    = os.path.join(ld, f"{ln}.txt")
     event_log_file = output_file
-    print(f"Log : {output_file}")
+    print(f"Log: {output_file}")
 
     dst_lat_str = decimal_to_deg_min(setup["destination_lat"], is_lon=False)
     dst_lon_str = decimal_to_deg_min(setup["destination_lon"], is_lon=True)
+
+    def yn(b): return "OK" if b else "NOK"
 
     with open(output_file, "w") as f:
         f.write("====================================\n")
@@ -498,36 +583,48 @@ def main():
         f.write("====================================\n\n")
         f.write(f"SKIPPER : {setup['skipper']}\n")
         f.write(f"CREW : {setup['crew']}\n")
-        # Un seul % — la valeur est déjà un float
-        f.write(f"FUEL : {setup['fuel_pct']:.0f} %\n")
         f.write(f"DEPARTURE : {setup['departure']}\n")
         f.write(f"DESTINATION : {setup['destination']}\n")
         f.write(f"DESTINATION LAT : {dst_lat_str}\n")
         f.write(f"DESTINATION LON : {dst_lon_str}\n")
         f.write(f"INITIAL DISTANCE : {initial_distance_nm:.1f}\n")
-        f.write(f"ENGINE : {setup['engine']}\n")
-        f.write(f"DESSAL : {setup['dessal']}\n")
+        f.write(f"DIRECT LEG : {'YES' if setup['direct_leg'] else 'NO'} ({dist_note})\n")
         f.write(f"SEA : {setup['sea']}\n")
+        f.write("\n--- ENGINE CONTROL CHECK ---\n")
+        f.write(f"FUEL : {setup['fuel_pct']:.0f} %\n")
+        f.write(f"FUEL PRE-FILTER : {yn(setup['prefil_ok'])}\n")
+        f.write(f"SEA WATER FILTER : {yn(setup['seawater_ok'])}\n")
+        f.write(f"ENGINE BILGE : {yn(setup['bilge_ok'])}\n")
+        f.write(f"OIL : {setup['oil_pct']:.0f} %\n")
+        f.write(f"COOLANT : {yn(setup['coolant_ok'])}\n")
+        f.write(f"BELT : {yn(setup['belt_ok'])}\n")
+        f.write(f"SEA COCK + IGNITION : {yn(setup['seacock_ok'])}\n")
+        f.write("\n--- BOAT CONTROL CHECK ---\n")
+        f.write(f"BILGES DRY : {yn(setup['bilges_dry'])}\n")
+        f.write(f"PORTHOLES CLOSED : {yn(setup['portholes_ok'])}\n")
+        f.write(f"BOAT STOWED : {yn(setup['boat_stowed'])}\n")
+        f.write("\n--- SCIENCE ---\n")
         f.write(f"CTD KEEL : {setup['ctd_keel']}\n")
         f.write("\n====================================\n\n")
 
     if setup["ctd_keel"] == "ON":
         write_event("CTD KEEL ON")
 
-    # ---------- boucle principale NMEA ----------
+    # ---------- main NMEA loop ----------
+    last_display = time.time()
+
     while not _shutdown_requested:
         try:
-            print("Connexion NMEA…")
+            print("Connecting to NMEA…")
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(10)
                 s.connect((HOST, PORT))
-                print("NMEA connecté.")
-                last_display = time.time()
+                print("NMEA connected.")
 
                 while not _shutdown_requested:
                     data = s.recv(2048).decode(errors="ignore")
                     if not data:
-                        raise Exception("Connexion perdue")
+                        raise Exception("Connection lost")
 
                     for line in data.split("\n"):
                         line = line.strip()
@@ -548,39 +645,30 @@ def main():
                                     distance_traveled_nm += d
                             last_position = (lat, lon)
 
-                            # Vérification arrivée à destination (< 1 NM)
-                            remaining_nm = haversine_nm(
-                                lat, lon,
+                    # 30-second display — timestamp + position
+                    now = time.time()
+                    if now - last_display > 30:
+                        if latest_fix:
+                            ts_now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+                            ls  = decimal_to_deg_min(latest_fix["lat"], is_lon=False)
+                            lo  = decimal_to_deg_min(latest_fix["lon"], is_lon=True)
+                            rem = haversine_nm(
+                                latest_fix["lat"], latest_fix["lon"],
                                 setup["destination_lat"], setup["destination_lon"]
                             )
-                            if remaining_nm < 1.0 and not _arrival_triggered:
-                                _arrival_triggered = True
-                                print(f"\n⚓  Moins de 1 NM de la destination ({setup['destination']}).")
-                                _ask_arrival_and_close(default_port=setup["destination"])
-
-                        if time.time() - last_display > 30:
-                            if latest_fix:
-                                ls  = decimal_to_deg_min(latest_fix["lat"], is_lon=False)
-                                lo  = decimal_to_deg_min(latest_fix["lon"], is_lon=True)
-                                rem = haversine_nm(
-                                    latest_fix["lat"], latest_fix["lon"],
-                                    setup["destination_lat"], setup["destination_lon"]
-                                )
-                                print(f"[NMEA] {ls}  {lo}  REM={rem:.1f} nm")
-                            last_display = time.time()
+                            print(f"[{ts_now}] {ls}  {lo}  REM={rem:.1f} nm  DIST={distance_traveled_nm:.1f} nm")
+                        last_display = now
 
         except Exception as e:
             if _shutdown_requested:
                 break
-            print(f"\nDéconnecté : {e}")
-            print("Reconnexion dans 5 s…\n")
-            # Pause interruptible : on dort par petits intervalles
+            print(f"\nDisconnected: {e}")
+            print("Reconnecting in 5 s…\n")
             for _ in range(50):
                 if _shutdown_requested:
                     break
                 time.sleep(0.1)
 
-    # Si on sort de la boucle sans passer par le handler (cas rare), on clôture quand même
     if not _shutdown_requested:
         _ask_arrival_and_close()
 
