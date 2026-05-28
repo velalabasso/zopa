@@ -382,12 +382,27 @@ def parse_nmea(file_path):
             })
             continue
 
+        # ----------------------------------------------------------
         # NMEA sentences
-        if not line.startswith("$"): continue
-        parts = line.split(","); msg = parts[0]
+        # ----------------------------------------------------------
+        if not line.startswith("$"):
+            continue
+
+        parts = line.split(",")
+
+        # Strip NMEA checksum from the last field  (e.g. "12*6F" → "12")
+        if parts and "*" in parts[-1]:
+            parts[-1] = parts[-1].split("*")[0]
+
+        msg = parts[0]
 
         if msg == "$GPRMC":
-            if current: records.append(current.copy()); current = {}
+            if current:
+                records.append(current.copy())
+                current = {}
+            if len(parts) < 10:
+                # Truncated / malformed sentence — skip gracefully
+                continue
             dt  = pd.to_datetime(parts[9]+parts[1], format="%d%m%y%H%M%S", errors="coerce")
             lat = nmea_to_decimal(parts[3], parts[4])
             lon = nmea_to_decimal(parts[5], parts[6])
