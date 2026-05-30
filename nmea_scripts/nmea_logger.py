@@ -39,19 +39,20 @@ last_position        = None
 
 motor_state     = "OFF"
 dessal_state    = "OFF"
-spinnaker_state = "OFF"
 
 main_state     = "OFF"
 main_reef      = 0
 jib_state      = "OFF"
 staysail_state = "OFF"
 stormjib_state = "OFF"
+spi_state      = "OFF"
 
 sea_state = "0"
 
 hypernet_state      = "OFF"
 net_state           = "OFF"
 inline_state        = "OFF"
+filtration_state    = "OFF"
 ctd_keel_state      = "OFF"
 ctd_profile_state   = "OFF"
 ctd_intercomp_state = "OFF"
@@ -60,15 +61,14 @@ ctd_intercomp_state = "OFF"
 _shutdown_requested = False
 
 # =========================================================
-# DISPLAY BUFFER — évite que les logs 30s interrompent la saisie
+# DISPLAY BUFFER — avoids 30s logs interrupting user input
 # =========================================================
 
 _display_lock    = threading.Lock()
-_pending_display = []   # lignes en attente
+_pending_display = []
 _user_typing     = False
 
 def _flush_pending():
-    """Affiche les lignes mises en buffer (appelé après un Enter)."""
     with _display_lock:
         if _pending_display:
             print()
@@ -77,7 +77,6 @@ def _flush_pending():
             _pending_display.clear()
 
 def _buffered_print(line):
-    """Appelé depuis le thread NMEA pour afficher sans interrompre la saisie."""
     with _display_lock:
         _pending_display.append(line)
 
@@ -110,7 +109,43 @@ def _ask_arrival_and_close(default_port=""):
         write_event(f"ARRIVAL : {arrival}")
     write_event(f"TOTAL TRAVELED : {distance_traveled_nm:.1f} nm")
 
+    # ---- END OF TRIP CONTROL ----
+    print("\n===================================")
+    print("       END OF TRIP CONTROL")
+    print("===================================\n")
+
+    def ask_yn_fin(question):
+        while True:
+            ans = input(f"  {question} (Y/N) : ").strip().upper()
+            if ans in ("Y", "N"):
+                return ans == "Y"
+            print("  Please answer Y or N.")
+
+    hull_clean      = ask_yn_fin("Hull clean")
+    engine_bilge_ok = ask_yn_fin("Engine bilge dry and clean")
+    fore_bilge_ok   = ask_yn_fin("Fore bilge dry and clean")
+
+    def yn(b): return "OK" if b else "NOK"
+
+    write_event(
+        f"END OF TRIP CONTROL | HULL={yn(hull_clean)} "
+        f"| ENGINE BILGE={yn(engine_bilge_ok)} "
+        f"| FORE BILGE={yn(fore_bilge_ok)}"
+    )
+
+    # Append end-of-trip control block to the log file
     if event_log_file and os.path.exists(event_log_file):
+        with open(event_log_file, "a") as f:
+            f.write("\n====================================\n")
+            f.write("       END OF TRIP CONTROL\n")
+            f.write("====================================\n")
+            f.write(f"ARRIVAL PORT    : {arrival}\n")
+            f.write(f"TOTAL DISTANCE  : {distance_traveled_nm:.1f} nm\n")
+            f.write(f"HULL CLEAN      : {yn(hull_clean)}\n")
+            f.write(f"ENGINE BILGE    : {yn(engine_bilge_ok)}\n")
+            f.write(f"FORE BILGE      : {yn(fore_bilge_ok)}\n")
+            f.write("====================================\n")
+
         print("Compressing log…")
         compress_file(event_log_file)
         print("File compressed.")
@@ -246,7 +281,6 @@ def parse_rmc(line):
 # =========================================================
 
 def write_event(event, timestamp=None):
-    """Écrit un event dans le log. Si timestamp fourni, il est utilisé à la place de 'now'."""
     global event_log_file
 
     if timestamp:
@@ -268,29 +302,125 @@ def write_event(event, timestamp=None):
 # RETRODATE EVENT
 # =========================================================
 
-# Pattern : EVENT_NAME YYYYMMDD HH:MM:SS
-# ex: ENGINE ON 20240615 14:32:00
 _RETRODATE_RE = re.compile(
     r"^(.+?)\s+(\d{8})\s+(\d{2}:\d{2}:\d{2})$"
 )
 
 def try_parse_retrodate(cmd):
-    """
-    Essaie de parser une commande rétrodatée.
-    Retourne (event_name, datetime) ou None si pas de match.
-    """
     m = _RETRODATE_RE.match(cmd.strip())
     if not m:
         return None
     event_name = m.group(1).upper().strip()
-    date_str   = m.group(2)   # YYYYMMDD
-    time_str   = m.group(3)   # HH:MM:SS
+    date_str   = m.group(2)
+    time_str   = m.group(3)
     try:
         ts = datetime.strptime(date_str + " " + time_str, "%Y%m%d %H:%M:%S")
         return (event_name, ts)
     except ValueError:
         return None
 
+# =========================================================
+# FUEL ESTIMATION
+# =========================================================
+
+# Calibration points: litres -> gauge %
+_FUEL_CALIB = [
+    (0,   0),
+    (20,  40),
+    (40,  50),
+    (60,  62),
+    (80,  88),
+    (100, 100),
+    (120, 100),
+]
+
+def gauge_pct_to_litres(gauge_pct):
+    """Interpolate calibration table: gauge % -> litres."""
+    if gauge_pct <= _FUEL_CALIB[0][1]:
+        return _FUEL_CALIB[0][0]
+    if gauge_pct >= _FUEL_CALIB[-1][1]:
+        return _FUEL_CALIB[-1][0]
+    for i in range(len(_FUEL_CALIB) - 1):
+        l0, p0 = _FUEL_CALIB[i]
+        l1, p1 = _FUEL_CALIB[i + 1]
+        if p0 <= gauge_pct <= p1:
+            if p1 == p0:
+                return (l0 + l1) / 2
+            t = (gauge_pct - p0) / (p1 - p0)
+            return l0 + t * (l1 - l0)
+    return None
+
+def fuel_check_interactive():
+    """
+    Interactive fuel check.
+    Returns dict with all fuel data.
+    """
+    TANK_CAPACITY = 120.0   # litres
+    CONSUMPTION   = 1.5     # L/h
+
+    print("\n  --- Fuel check ---")
+
+    while True:
+        try:
+            last_fill_l = float(input("  Last fill (L) : ").strip())
+            if last_fill_l <= 0: raise ValueError("must be > 0")
+            break
+        except ValueError as e:
+            print(f"  Invalid value ({e}), try again.")
+
+    while True:
+        try:
+            engine_hours = float(input("  Engine hours since last fill (h) : ").strip())
+            if engine_hours < 0: raise ValueError("must be >= 0")
+            break
+        except ValueError as e:
+            print(f"  Invalid value ({e}), try again.")
+
+    consumed    = engine_hours * CONSUMPTION
+    remaining_1 = max(0.0, last_fill_l - consumed)
+    pct_est_1   = round(remaining_1 / TANK_CAPACITY * 100, 1)
+
+    print(f"\n  -> Estimate 1 (engine hours) : {remaining_1:.1f} L  ({pct_est_1:.1f} %)")
+
+    while True:
+        try:
+            gauge_pct = float(input("  Fuel gauge reading (%) : ").strip())
+            if not (0 <= gauge_pct <= 100): raise ValueError("out of [0-100]")
+            break
+        except ValueError as e:
+            print(f"  Invalid value ({e}), try again.")
+
+    remaining_2 = gauge_pct_to_litres(gauge_pct)
+    pct_est_2   = round(remaining_2 / TANK_CAPACITY * 100, 1)
+
+    print(f"  -> Estimate 2 (gauge)        : {remaining_2:.1f} L  ({pct_est_2:.1f} %)\n")
+
+    return {
+        "last_fill_l"   : last_fill_l,
+        "engine_hours"  : engine_hours,
+        "consumed_l"    : consumed,
+        "remaining_est1": remaining_1,
+        "pct_est1"      : pct_est_1,
+        "gauge_pct"     : gauge_pct,
+        "remaining_est2": remaining_2,
+        "pct_est2"      : pct_est_2,
+    }
+
+# =========================================================
+# ENGINE ON — with cooling water check
+# =========================================================
+
+def engine_on_sequence():
+    """Called at each 'engine on' (setup or terminal)."""
+    global motor_state
+    while True:
+        ans = input("  Cooling water flowing overboard (Y/N) : ").strip().upper()
+        if ans in ("Y", "N"):
+            break
+        print("  Please answer Y or N.")
+    cooling_ok = (ans == "Y")
+    motor_state = "ON"
+    write_event(f"ENGINE ON | COOLING WATER {'OK' if cooling_ok else 'NOK'}")
 
 # =========================================================
 # SETUP
@@ -332,7 +462,6 @@ def navigation_setup():
         except ValueError as e:
             print(f"  Unrecognised format ({e}), try again.")
 
-    # Direct leg or waypoints?
     direct_str = input("\nDirect leg to destination? (Y/N) : ").strip().upper()
     direct_leg = (direct_str == "Y")
 
@@ -362,29 +491,29 @@ def navigation_setup():
                 return ans == "Y"
             print("  Please answer Y or N.")
 
-    while True:
-        try:
-            fuel_pct = float(input("Fuel level (0-100 %) : ").strip())
-            if not (0 <= fuel_pct <= 100): raise ValueError("out of [0-100]")
-            break
-        except ValueError as e:
-            print(f"  Invalid value ({e}), try again.")
+    # -- Fuel check --
+    fuel_data = fuel_check_interactive()
 
+    # -- Aft engine compartment --
+    print("  [Aft engine compartment]")
     prefil_ok   = ask_yn("Fuel pre-filter clean")
     seawater_ok = ask_yn("Sea water filter clean")
-    bilge_ok    = ask_yn("Engine bilge dry and clean")
 
     while True:
-        try:
-            oil_pct = float(input("Oil level (0-100 %) : ").strip())
-            if not (0 <= oil_pct <= 100): raise ValueError("out of [0-100]")
+        ans = input("Priming bulb firm (Y/N) : ").strip().upper()
+        if ans in ("Y", "N"):
+            priming_ok = (ans == "Y")
             break
-        except ValueError as e:
-            print(f"  Invalid value ({e}), try again.")
+        print("  Please answer Y or N.")
 
-    coolant_ok  = ask_yn("Coolant level OK")
-    belt_ok     = ask_yn("Belt tension OK (~1 cm deflection under thumb pressure)")
-    seacock_ok  = ask_yn("Sea cock open and ignition on")
+    bilge_ok_rear = ask_yn("Engine bilge dry and clean")
+    coolant_ok    = ask_yn("Coolant level OK")
+    seacock_ok    = ask_yn("Sea cock open and ignition on")
+
+    # -- Forward engine compartment --
+    print("\n  [Forward engine compartment]")
+    belt_ok        = ask_yn("Belt tension OK (~1 cm deflection under thumb pressure)")
+    bilge_ok_front = ask_yn("Engine bilge dry and clean (forward)")
 
     # ---------------------------------------------------
     # PART 3 — BOAT CONTROL CHECK
@@ -393,10 +522,10 @@ def navigation_setup():
     print("    PART 3 — BOAT CONTROL CHECK")
     print("===================================\n")
 
-    bilges_dry    = ask_yn("Bilges dry")
-    portholes_ok  = ask_yn("Portholes closed")          # hublots fermés
-    seacocks_ok   = ask_yn("Sea cocks closed")           # passes-coques fermés
-    boat_stowed   = ask_yn("Boat stowed and secured")
+    bilges_dry   = ask_yn("Bilges dry")
+    portholes_ok = ask_yn("Portholes closed")
+    seacocks_ok  = ask_yn("Sea cocks closed")
+    boat_stowed  = ask_yn("Boat stowed and secured")
 
     # ---------------------------------------------------
     # PART 4 — SCIENCE
@@ -407,7 +536,13 @@ def navigation_setup():
 
     ctd_keel = "ON" if input("CTD keel ON? (Y/N) : ").strip().upper() == "Y" else "OFF"
 
+    # ---------------------------------------------------
+    # ENGINE START?
+    # ---------------------------------------------------
     print("\n===================================\n")
+    engine_start_now = input("Engine ON now? (Y/N) : ").strip().upper() == "Y"
+    if engine_start_now:
+        engine_on_sequence()
 
     return {
         "skipper"           : skipper,
@@ -419,15 +554,18 @@ def navigation_setup():
         "direct_leg"        : direct_leg,
         "manual_distance_nm": manual_distance_nm,
         "sea"               : sea_val,
-        # Engine check
-        "fuel_pct"          : fuel_pct,
+        # Fuel
+        "fuel_data"         : fuel_data,
+        # Engine check aft
         "prefil_ok"         : prefil_ok,
         "seawater_ok"       : seawater_ok,
-        "bilge_ok"          : bilge_ok,
-        "oil_pct"           : oil_pct,
+        "priming_ok"        : priming_ok,
+        "bilge_ok_rear"     : bilge_ok_rear,
         "coolant_ok"        : coolant_ok,
-        "belt_ok"           : belt_ok,
         "seacock_ok"        : seacock_ok,
+        # Engine check forward
+        "belt_ok"           : belt_ok,
+        "bilge_ok_front"    : bilge_ok_front,
         # Boat check
         "bilges_dry"        : bilges_dry,
         "portholes_ok"      : portholes_ok,
@@ -443,19 +581,12 @@ def navigation_setup():
 
 def terminal_event_listener():
 
-    global motor_state, dessal_state, spinnaker_state
+    global motor_state, dessal_state
     global main_state, main_reef
-    global jib_state, staysail_state, stormjib_state
+    global jib_state, staysail_state, stormjib_state, spi_state
     global sea_state
-    global hypernet_state, net_state, inline_state
+    global hypernet_state, net_state, inline_state, filtration_state
     global ctd_keel_state, ctd_profile_state, ctd_intercomp_state
-
-    def ask_yn_inline(question):
-        while True:
-            ans = input(f"  {question} (Y/N) : ").strip().upper()
-            if ans in ("Y", "N"):
-                return ans == "Y"
-            print("  Please answer Y or N.")
 
     def print_help():
         print("\n===================================")
@@ -463,28 +594,30 @@ def terminal_event_listener():
         print("===================================")
         print("\n--- Navigation ---")
         print(" engine on/off")
-        print(" engine check    (event moteur inspecté)")
+        print(" engine check    (engine inspected)")
         print(" dessal on/off")
-        print(" spinnaker on/off")
         print(" main on         (asks for reef)")
         print(" main off")
         print(" jib on/off")
         print(" staysail on/off")
         print(" stormjib on/off")
+        print(" spi on/off")
         print(" sea X           (0-9)")
-        print(" n: texte        (commentaire navigation)")
-        print(" s: texte        (commentaire science)")
+        print(" n: text         (navigation comment)")
+        print(" s: text         (science comment)")
         print(" state           (show current state)")
         print("\n--- Science ---")
         print(" hypernet on/off")
         print(" net on/off")
         print(" inline on/off")
+        print(" filtration on/off")
+        print(" bucket          (instant event)")
         print(" ctd keel on/off")
         print(" ctd profile on/off")
         print(" ctd intercomp on/off")
-        print("\n--- Event rétrodaté ---")
-        print(" NOM_EVENT YYYYMMDD HH:MM:SS")
-        print("   ex: ENGINE ON 20240615 14:32:00")
+        print("\n--- Backdated event ---")
+        print(" EVENT_NAME YYYYMMDD HH:MM:SS")
+        print("   e.g.: ENGINE ON 20240615 14:32:00")
         print("\n--- Help ---")
         print(" help")
         print("===================================\n")
@@ -500,12 +633,13 @@ def terminal_event_listener():
         print(f" Jib       : {jib_state}")
         print(f" Staysail  : {staysail_state}")
         print(f" Storm jib : {stormjib_state}")
-        print(f" Spinnaker : {spinnaker_state}")
+        print(f" Spi       : {spi_state}")
         print(f" Sea state : {sea_state}")
         print("--- Science ---")
         print(f" Hypernet     : {hypernet_state}")
         print(f" Net          : {net_state}")
         print(f" Inline       : {inline_state}")
+        print(f" Filtration   : {filtration_state}")
         print(f" CTD keel     : {ctd_keel_state}")
         print(f" CTD profile  : {ctd_profile_state}")
         print(f" CTD intercomp: {ctd_intercomp_state}")
@@ -515,17 +649,13 @@ def terminal_event_listener():
 
     while True:
         try:
-            # Flush les lignes de log en attente après chaque Enter
             cmd = input("").strip()
             _flush_pending()
             cmd_lower = cmd.lower()
 
             # ---- Navigation ----
-            if   cmd_lower == "engine on":
-                # Demande confirmation eau de refroidissement
-                cooling_ok = ask_yn_inline("Eau de refroidissement crachée à l'extérieur")
-                motor_state = "ON"
-                write_event(f"ENGINE ON | COOLING WATER {'OK' if cooling_ok else 'NOK'}")
+            if cmd_lower == "engine on":
+                engine_on_sequence()
 
             elif cmd_lower == "engine off":
                 motor_state = "OFF";     write_event("ENGINE OFF")
@@ -535,8 +665,6 @@ def terminal_event_listener():
 
             elif cmd_lower == "dessal on":     dessal_state = "ON";     write_event("DESSAL ON")
             elif cmd_lower == "dessal off":    dessal_state = "OFF";    write_event("DESSAL OFF")
-            elif cmd_lower == "spinnaker on":  spinnaker_state = "ON";  write_event("SPINNAKER ON")
-            elif cmd_lower == "spinnaker off": spinnaker_state = "OFF"; write_event("SPINNAKER OFF")
 
             elif cmd_lower == "main on":
                 main_state = "ON"
@@ -552,6 +680,8 @@ def terminal_event_listener():
             elif cmd_lower == "staysail off": staysail_state = "OFF"; write_event("STAYSAIL OFF")
             elif cmd_lower == "stormjib on":  stormjib_state = "ON";  write_event("STORMJIB ON")
             elif cmd_lower == "stormjib off": stormjib_state = "OFF"; write_event("STORMJIB OFF")
+            elif cmd_lower == "spi on":       spi_state = "ON";       write_event("SPI ON")
+            elif cmd_lower == "spi off":      spi_state = "OFF";      write_event("SPI OFF")
 
             elif cmd_lower.startswith("sea "):
                 parts = cmd_lower.split()
@@ -560,20 +690,20 @@ def terminal_event_listener():
                 else:
                     print("Unknown command.")
 
-            # ---- Commentaires nav / science ----
+            # ---- Navigation / science comments ----
             elif cmd_lower.startswith("n:"):
                 text = cmd[2:].strip()
                 if text:
                     write_event(f"NAV : {text}")
                 else:
-                    print("  Usage : n: votre commentaire")
+                    print("  Usage : n: your comment")
 
             elif cmd_lower.startswith("s:"):
                 text = cmd[2:].strip()
                 if text:
                     write_event(f"SCI : {text}")
                 else:
-                    print("  Usage : s: votre commentaire")
+                    print("  Usage : s: your comment")
 
             # ---- Science ----
             elif cmd_lower == "ctd keel on":        ctd_keel_state = "ON";        write_event("CTD KEEL ON")
@@ -583,14 +713,19 @@ def terminal_event_listener():
             elif cmd_lower == "ctd intercomp on":   ctd_intercomp_state = "ON";   write_event("CTD INTERCOMP ON")
             elif cmd_lower == "ctd intercomp off":  ctd_intercomp_state = "OFF";  write_event("CTD INTERCOMP OFF")
 
-            elif cmd_lower == "hypernet on":   hypernet_state = "ON";  write_event("HYPERNET ON")
-            elif cmd_lower == "hypernet off":  hypernet_state = "OFF"; write_event("HYPERNET OFF")
-            elif cmd_lower == "net on":        net_state = "ON";       write_event("NET ON")
-            elif cmd_lower == "net off":       net_state = "OFF";      write_event("NET OFF")
-            elif cmd_lower == "inline on":     inline_state = "ON";    write_event("INLINE ON")
-            elif cmd_lower == "inline off":    inline_state = "OFF";   write_event("INLINE OFF")
+            elif cmd_lower == "hypernet on":        hypernet_state = "ON";    write_event("HYPERNET ON")
+            elif cmd_lower == "hypernet off":       hypernet_state = "OFF";   write_event("HYPERNET OFF")
+            elif cmd_lower == "net on":             net_state = "ON";         write_event("NET ON")
+            elif cmd_lower == "net off":            net_state = "OFF";        write_event("NET OFF")
+            elif cmd_lower == "inline on":          inline_state = "ON";      write_event("INLINE ON")
+            elif cmd_lower == "inline off":         inline_state = "OFF";     write_event("INLINE OFF")
+            elif cmd_lower == "filtration on":      filtration_state = "ON";  write_event("FILTRATION ON")
+            elif cmd_lower == "filtration off":     filtration_state = "OFF"; write_event("FILTRATION OFF")
 
-            # ---- Etat / help ----
+            elif cmd_lower == "bucket":
+                write_event("BUCKET")
+
+            # ---- State / help ----
             elif cmd_lower == "state":
                 print_state()
 
@@ -598,10 +733,9 @@ def terminal_event_listener():
                 print_help()
 
             elif cmd_lower == "":
-                pass   # silent blank line
+                pass
 
             else:
-                # ---- Tentative event rétrodaté ----
                 retro = try_parse_retrodate(cmd)
                 if retro:
                     event_name, ts = retro
@@ -682,6 +816,7 @@ def main():
     dst_lon_str = decimal_to_deg_min(setup["destination_lon"], is_lon=True)
 
     def yn(b): return "OK" if b else "NOK"
+    fd = setup["fuel_data"]
 
     with open(output_file, "w") as f:
         f.write("====================================\n")
@@ -693,25 +828,37 @@ def main():
         f.write(f"DESTINATION : {setup['destination']}\n")
         f.write(f"DESTINATION LAT : {dst_lat_str}\n")
         f.write(f"DESTINATION LON : {dst_lon_str}\n")
-        f.write(f"INITIAL DISTANCE : {initial_distance_nm:.1f}\n")
+        f.write(f"INITIAL DISTANCE : {initial_distance_nm:.1f} nm\n")
         f.write(f"DIRECT LEG : {'YES' if setup['direct_leg'] else 'NO'} ({dist_note})\n")
         f.write(f"SEA : {setup['sea']}\n")
+
         f.write("\n--- ENGINE CONTROL CHECK ---\n")
-        f.write(f"FUEL : {setup['fuel_pct']:.0f} %\n")
-        f.write(f"FUEL PRE-FILTER : {yn(setup['prefil_ok'])}\n")
-        f.write(f"SEA WATER FILTER : {yn(setup['seawater_ok'])}\n")
-        f.write(f"ENGINE BILGE : {yn(setup['bilge_ok'])}\n")
-        f.write(f"OIL : {setup['oil_pct']:.0f} %\n")
-        f.write(f"COOLANT : {yn(setup['coolant_ok'])}\n")
-        f.write(f"BELT : {yn(setup['belt_ok'])}\n")
+        f.write(f"LAST FILL (L)                        : {fd['last_fill_l']:.0f} L\n")
+        f.write(f"ENGINE HOURS SINCE LAST FILL (h)     : {fd['engine_hours']:.1f} h\n")
+        f.write(f"ESTIMATE 1 (engine hours)            : {fd['remaining_est1']:.1f} L  ({fd['pct_est1']:.1f} %)\n")
+        f.write(f"GAUGE READING                        : {fd['gauge_pct']:.0f} %\n")
+        f.write(f"ESTIMATE 2 (gauge)                   : {fd['remaining_est2']:.1f} L  ({fd['pct_est2']:.1f} %)\n")
+        f.write(f"FUEL PRE-FILTER     : {yn(setup['prefil_ok'])}\n")
+        f.write(f"SEA WATER FILTER    : {yn(setup['seawater_ok'])}\n")
+        f.write(f"PRIMING BULB        : {'FIRM' if setup['priming_ok'] else 'SOFT'}\n")
+        f.write(f"ENGINE BILGE (AFT)  : {yn(setup['bilge_ok_rear'])}\n")
+        f.write(f"COOLANT             : {yn(setup['coolant_ok'])}\n")
         f.write(f"SEA COCK + IGNITION : {yn(setup['seacock_ok'])}\n")
+        f.write(f"BELT                : {yn(setup['belt_ok'])}\n")
+        f.write(f"ENGINE BILGE (FWD)  : {yn(setup['bilge_ok_front'])}\n")
+
         f.write("\n--- BOAT CONTROL CHECK ---\n")
-        f.write(f"BILGES DRY : {yn(setup['bilges_dry'])}\n")
+        f.write(f"BILGES DRY       : {yn(setup['bilges_dry'])}\n")
         f.write(f"PORTHOLES CLOSED : {yn(setup['portholes_ok'])}\n")
         f.write(f"SEA COCKS CLOSED : {yn(setup['seacocks_ok'])}\n")
-        f.write(f"BOAT STOWED : {yn(setup['boat_stowed'])}\n")
+        f.write(f"BOAT STOWED      : {yn(setup['boat_stowed'])}\n")
+
         f.write("\n--- SCIENCE ---\n")
         f.write(f"CTD KEEL : {setup['ctd_keel']}\n")
+
+        f.write("\n--- END OF TRIP CONTROL ---\n")
+        f.write("(filled at arrival)\n")
+
         f.write("\n====================================\n\n")
 
     if setup["ctd_keel"] == "ON":
@@ -752,7 +899,6 @@ def main():
                                     distance_traveled_nm += d
                             last_position = (lat, lon)
 
-                    # 30-second display — mis en buffer, affiché au prochain Enter
                     now = time.time()
                     if now - last_display > 30:
                         if latest_fix:

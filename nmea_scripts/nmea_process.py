@@ -222,44 +222,64 @@ def parse_nmea(file_path):
         "date_depart":"", "arrival":"",
         # boat check fields
         "bilges_dry":"", "portholes_closed":"", "seacocks_closed":"", "boat_stowed":"",
-        # engine check fields
+        # engine check fields — new fuel fields
+        "last_fill_l":"", "engine_hours_since_fill":"",
+        "fuel_est1_l":"", "fuel_est1_pct":"",
+        "gauge_pct":"", "fuel_est2_l":"", "fuel_est2_pct":"",
         "fuel_pre_filter":"", "seawater_filter":"", "engine_bilge":"",
-        "oil_level":"", "coolant":"", "belt":"", "seacock":"",
+        "oil_level":"", "coolant":"", "belt":"", "seacock":"", "priming_bulb":"",
+        # end of trip control
+        "arrival_port":"", "total_traveled":"",
+        "hull_clean":"", "engine_bilge_end":"", "fore_bilge_end":"",
         "route_type":"",
     }
 
     HEADER_KEYS = {
-        "SKIPPER"            : "skipper",
-        "CREW"               : "crew",
-        "FUEL"               : "fuel_pct",
-        "DEPARTURE"          : "departure",
-        "DESTINATION LAT"    : "destination_lat",
-        "DESTINATION LON"    : "destination_lon",
-        "DESTINATION"        : "destination",
-        "INITIAL DISTANCE"   : "initial_dist_nm",
-        "ENGINE"             : "engine_start",
-        "DESSAL"             : "dessal_start",
-        "SEA"                : "sea_start",
-        "CTD KEEL"           : "ctd_keel_start",
-        "DIRECT LEG"         : "route_type",
-        "ROUTE TYPE"         : "route_type",
+        "SKIPPER"                           : "skipper",
+        "CREW"                              : "crew",
+        "FUEL"                              : "fuel_pct",
+        "DEPARTURE"                         : "departure",
+        "DESTINATION LAT"                   : "destination_lat",
+        "DESTINATION LON"                   : "destination_lon",
+        "DESTINATION"                       : "destination",
+        "INITIAL DISTANCE"                  : "initial_dist_nm",
+        "ENGINE"                            : "engine_start",
+        "DESSAL"                            : "dessal_start",
+        "SEA"                               : "sea_start",
+        "CTD KEEL"                          : "ctd_keel_start",
+        "DIRECT LEG"                        : "route_type",
+        "ROUTE TYPE"                        : "route_type",
         # Boat check
-        "BILGES DRY"         : "bilges_dry",
-        "PORTHOLES CLOSED"   : "portholes_closed",
-        "SEA COCKS CLOSED"   : "seacocks_closed",
-        "BOAT STOWED"        : "boat_stowed",
-        # Engine check
-        "FUEL PRE-FILTER"    : "fuel_pre_filter",
-        "SEA WATER FILTER"   : "seawater_filter",
-        "SEAWATER FILTER"    : "seawater_filter",
-        "ENGINE BILGE"       : "engine_bilge",
-        "OIL"                : "oil_level",
-        "OIL LEVEL"          : "oil_level",
-        "COOLANT"            : "coolant",
-        "BELT"               : "belt",
-        "BELT TENSION"       : "belt",
-        "SEA COCK + IGNITION": "seacock",
-        "SEACOCK + IGNITION" : "seacock",
+        "BILGES DRY"                        : "bilges_dry",
+        "PORTHOLES CLOSED"                  : "portholes_closed",
+        "SEA COCKS CLOSED"                  : "seacocks_closed",
+        "BOAT STOWED"                       : "boat_stowed",
+        # Engine check — new fuel fields
+        "LAST FILL (L)"                     : "last_fill_l",
+        "ENGINE HOURS SINCE LAST FILL (h)"  : "engine_hours_since_fill",
+        "ESTIMATE 1 (engine hours)"         : "fuel_est1_l",
+        "GAUGE READING"                     : "gauge_pct",
+        "ESTIMATE 2 (gauge)"                : "fuel_est2_l",
+        # Legacy fuel field
+        "FUEL PRE-FILTER"                   : "fuel_pre_filter",
+        "SEA WATER FILTER"                  : "seawater_filter",
+        "SEAWATER FILTER"                   : "seawater_filter",
+        "ENGINE BILGE (AFT)"                : "engine_bilge",
+        "ENGINE BILGE"                      : "engine_bilge",
+        "OIL"                               : "oil_level",
+        "OIL LEVEL"                         : "oil_level",
+        "COOLANT"                           : "coolant",
+        "BELT"                              : "belt",
+        "BELT TENSION"                      : "belt",
+        "PRIMING BULB"                      : "priming_bulb",
+        "SEA COCK + IGNITION"               : "seacock",
+        "SEACOCK + IGNITION"                : "seacock",
+        # End of trip control
+        "ARRIVAL PORT"                      : "arrival_port",
+        "TOTAL DISTANCE"                    : "total_traveled",
+        "HULL CLEAN"                        : "hull_clean",
+        "ENGINE BILGE"                      : "engine_bilge_end",
+        "FORE BILGE"                        : "fore_bilge_end",
     }
 
     cur_engine="OFF"; cur_dessal="OFF"; cur_main="OFF"
@@ -282,13 +302,12 @@ def parse_nmea(file_path):
         # Header lines  (key : value, not NMEA, not EVENT)
         if " : " in line and not line.startswith("$") and not line.startswith("# EVENT"):
             for hk, mk in HEADER_KEYS.items():
-                if line.startswith(hk + " :"):
-                    meta[mk] = line.split(" : ", 1)[1].strip(); break
+                if line.startswith(hk + " :") or line.startswith(hk + ":"):
+                    meta[mk] = line.split(" : ", 1)[-1].strip() if " : " in line else line.split(":",1)[-1].strip()
+                    break
 
         # Events
         if line.startswith("# EVENT"):
-            # Support both timestamped  "# EVENT [2024-06-01T12:34:56Z] : ..."
-            # and plain                 "# EVENT : ..."
             import re
             m_ts = re.match(r"# EVENT \[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\] : (.*)", line)
             if m_ts:
@@ -308,7 +327,6 @@ def parse_nmea(file_path):
             if etype == "SKIP":
                 continue
 
-            # ---- Engine time: use ev_timestamp for accuracy ----
             if etype == "ENGINE":
                 if "ON" in edetail:
                     cur_engine = "ON"
@@ -318,7 +336,7 @@ def parse_nmea(file_path):
                     if engine_on_since is not None and ev_timestamp is not None:
                         try:
                             delta_min = (ev_timestamp - engine_on_since).total_seconds() / 60.0
-                            if 0 < delta_min < 1440:  # sanity: < 24h
+                            if 0 < delta_min < 1440:
                                 engine_minutes_cum += delta_min
                         except:
                             pass
@@ -354,7 +372,6 @@ def parse_nmea(file_path):
             if cur_stormjib  == "ON": sails.append("STORM JIB")
             if cur_spinnaker == "ON": sails.append("SPINNAKER")
 
-            # Engine minutes at this event moment (include running session if active)
             engine_minutes_now = engine_minutes_cum
             if cur_engine == "ON" and engine_on_since is not None and ev_timestamp is not None:
                 try:
@@ -364,7 +381,6 @@ def parse_nmea(file_path):
                 except:
                     pass
 
-            # For retrodate events the position will be interpolated after full parse
             is_retro = (m_ts is not None)
 
             events.append({
@@ -382,15 +398,11 @@ def parse_nmea(file_path):
             })
             continue
 
-        # ----------------------------------------------------------
-        # NMEA sentences
-        # ----------------------------------------------------------
         if not line.startswith("$"):
             continue
 
         parts = line.split(",")
 
-        # Strip NMEA checksum from the last field  (e.g. "12*6F" → "12")
         if parts and "*" in parts[-1]:
             parts[-1] = parts[-1].split("*")[0]
 
@@ -401,7 +413,6 @@ def parse_nmea(file_path):
                 records.append(current.copy())
                 current = {}
             if len(parts) < 10:
-                # Truncated / malformed sentence — skip gracefully
                 continue
             dt  = pd.to_datetime(parts[9]+parts[1], format="%d%m%y%H%M%S", errors="coerce")
             lat = nmea_to_decimal(parts[3], parts[4])
@@ -493,10 +504,7 @@ def parse_nmea(file_path):
 
     df_events = pd.DataFrame(events)
 
-    # --- Interpolate GPS position for retrodate events ---
-    # We now have all NMEA records; build a quick time->lat/lon lookup
     if records and not df_events.empty and "is_retrodate" in df_events.columns:
-        # Build arrays from collected records
         _recs_with_pos = [(r["datetime"], r["lat_raw"], r["lon_raw"])
                           for r in records
                           if "datetime" in r and "lat_raw" in r and "lon_raw" in r
@@ -520,12 +528,11 @@ def parse_nmea(file_path):
                     elif pos >= len(_rts):
                         best = len(_rts) - 1
                     else:
-                        # Pick closest neighbour
                         best = pos if abs(_rts[pos]-t_ns) <= abs(_rts[pos-1]-t_ns) else pos-1
                     df_events.at[idx, "lat"] = float(_rlat[best])
                     df_events.at[idx, "lon"] = float(_rlon[best])
                 except Exception:
-                    pass  # keep last_lat/last_lon as fallback
+                    pass
 
     meta["_first_datetime"] = first_datetime
     return df, df_events, meta
@@ -792,16 +799,17 @@ def build_track_map(df, meta):
 COLOR_NAV        = colors.HexColor("#cce5ff")
 COLOR_SCIENCE    = colors.HexColor("#d4edda")
 COLOR_ENGINE     = colors.HexColor("#f8d7da")
-COLOR_NAV_CMT    = colors.HexColor("#fff3cd")
-COLOR_SCI_CMT    = colors.HexColor("#d1ecf1")
+# Comments are white — no colour
+COLOR_NAV_CMT    = colors.white
+COLOR_SCI_CMT    = colors.white
 COLOR_OTHER      = colors.white
 COLOR_EVENT_TEXT = colors.black
 
 def event_color(etype):
-    if etype == "ENGINE":        return COLOR_ENGINE
-    if etype in SCIENCE_EVENT_TYPES: return COLOR_SCIENCE
-    if etype == "NAV_COMMENT":   return COLOR_NAV_CMT
-    if etype == "SCI_COMMENT":   return COLOR_SCI_CMT
+    if etype == "ENGINE":                  return COLOR_ENGINE
+    if etype in SCIENCE_EVENT_TYPES:       return COLOR_SCIENCE
+    if etype == "NAV_COMMENT":             return COLOR_NAV_CMT
+    if etype == "SCI_COMMENT":             return COLOR_SCI_CMT
     return COLOR_NAV
 
 
@@ -809,7 +817,7 @@ def event_color(etype):
 # PDF HELPERS
 # =========================================================
 
-HEADER_COLOR    = colors.HexColor("#1a3a5c")
+HEADER_COLOR    = colors.HexColor("#1a3a5c")   # dark navy — used for all label cells
 ALT_COLOR       = colors.HexColor("#eaf0f8")
 COLOR_HIGHLIGHT = colors.HexColor("#fff9c4")
 COLOR_ENG_LAST  = colors.HexColor("#f8d7da")
@@ -1032,26 +1040,24 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         styles["Normal"]))
     content.append(Spacer(1, 10))
 
-    # --- VOYAGE SUMMARY CARD ---
+    # -------------------------------------------------------
+    # VOYAGE SUMMARY CARD
+    # All label cells: HEADER_COLOR (dark navy)
+    # Same column widths: [3.0cm, 8.5cm, 3.0cm, 8.5cm] = 23cm total
+    # -------------------------------------------------------
     arrival_str = meta.get("arrival","") or ("IN PROGRESS" if in_progress else "—")
-
-    fuel_raw = meta.get("fuel_pct","") or "—"
-    if fuel_raw != "—":
-        fuel_raw = fuel_raw.replace("%","").strip()
-        fuel_str = fuel_raw + " %"
-    else:
-        fuel_str = "—"
 
     route_type_str = meta.get("route_type","") or "—"
 
+    # 6 rows, 4 cols — removed Fuel and Sea State rows
     fiche_data = [
         ["DATE",        meta.get("date_depart","—"),  "SKIPPER",      meta.get("skipper","—")],
-        ["CREW",        meta.get("crew","—"),          "FUEL",         fuel_str],
+        ["CREW",        meta.get("crew","—"),          "",             ""],
         ["DEPARTURE",   meta.get("departure","—"),     "LAT. DEST.",   meta.get("destination_lat","—")],
         ["ARRIVAL",     arrival_str,                   "LON. DEST.",   meta.get("destination_lon","—")],
         ["DESTINATION", meta.get("destination","—"),   "INIT. DIST.",
          (meta.get("initial_dist_nm","—") or "—").replace("nm","").strip() + " nm"],
-        ["DIRECT LEG",  route_type_str,                "SEA STATE",    meta.get("sea_start","—")],
+        ["DIRECT LEG",  route_type_str,                "",             ""],
     ]
 
     style_fiche_lbl = ParagraphStyle("FicheLbl", parent=styles["Normal"],
@@ -1059,6 +1065,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     style_fiche_val = ParagraphStyle("FicheVal", parent=styles["Normal"], fontSize=8)
 
     DEP_ROW = 2; ARR_ROW = 3
+
     dep_bg = colors.HexColor("#d5f5e3"); arr_bg = colors.HexColor("#f5c6cb")
 
     fiche_display = [
@@ -1069,10 +1076,11 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         for r in fiche_data
     ]
 
+    # Unified dark navy for ALL label columns (col 0 and col 2)
     fiche_style = TableStyle([
         ("BACKGROUND",    (0,0), (-1,-1), colors.white),
-        ("BACKGROUND",    (0,0), (0,-1),  HEADER_COLOR),
-        ("BACKGROUND",    (2,0), (2,-1),  HEADER_COLOR),
+        ("BACKGROUND",    (0,0), (0,-1),  HEADER_COLOR),   # all labels col 0
+        ("BACKGROUND",    (2,0), (2,-1),  HEADER_COLOR),   # all labels col 2
         ("BACKGROUND",    (1,DEP_ROW), (1,DEP_ROW), dep_bg),
         ("BACKGROUND",    (1,ARR_ROW), (1,ARR_ROW), arr_bg),
         ("FONTNAME",      (0,0), (-1,-1), "Helvetica"),
@@ -1082,47 +1090,67 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         ("LEFTPADDING",   (0,0), (-1,-1), 6), ("RIGHTPADDING",  (0,0), (-1,-1), 6),
         ("TOPPADDING",    (0,0), (-1,-1), 4), ("BOTTOMPADDING", (0,0), (-1,-1), 4),
     ])
-    tf = Table(fiche_display, colWidths=[3.0*cm, 8.5*cm, 3.0*cm, 8.5*cm])
+
+    # Fixed total width = 3.0 + 8.5 + 3.0 + 8.5 = 23 cm
+    COL_WIDTHS_FICHE = [3.0*cm, 8.5*cm, 3.0*cm, 8.5*cm]
+    tf = Table(fiche_display, colWidths=COL_WIDTHS_FICHE)
     tf.setStyle(fiche_style)
     content.append(tf)
     content.append(Spacer(1, 8))
 
     # -------------------------------------------------------
-    # CHECKUP — 4-column table same width as voyage card
-    # Boat check (left pair) | Engine check (right pair)
+    # CHECKUP — 2-column layout, all English, all cells filled
+    #
+    # LEFT COLUMN  (col 0=label, col 1=value):
+    #   [BOAT CHECK header]
+    #   4 boat check rows
+    #   [ENGINE CHECK header]
+    #   12 engine check rows
+    #
+    # RIGHT COLUMN (col 2=label, col 3=value):
+    #   filled in parallel; once left content runs out →
+    #   [END OF TRIP CONTROL header]
+    #   5 EOT rows, then blanks to match height
+    #
+    # Same total width as fiche: 3.5 + 8.0 + 3.5 + 8.0 = 23 cm
     # -------------------------------------------------------
     content.append(Paragraph("CHECKUP", style_section))
 
-    def _pct(raw):
-        v = str(raw).replace("%","").strip()
-        try: return f"{float(v):.0f} %"
-        except: return str(raw) if raw else "—"
-
     def _ok(val):
-        """Normalise OK/NOK values."""
         return str(val) if val else "—"
 
+    # ---- Boat check (4 rows) ----
     boat_checks = [
         ("Bilges dry",       _ok(meta.get("bilges_dry",""))),
         ("Portholes closed", _ok(meta.get("portholes_closed",""))),
         ("Sea cocks closed", _ok(meta.get("seacocks_closed",""))),
         ("Boat stowed",      _ok(meta.get("boat_stowed",""))),
     ]
+
+    # ---- Engine check (12 rows) ----
     engine_checks = [
-        ("Fuel level",           _pct(meta.get("fuel_pct",""))),
-        ("Fuel pre-filter",      _ok(meta.get("fuel_pre_filter",""))),
-        ("Sea water filter",     _ok(meta.get("seawater_filter",""))),
-        ("Engine bilge",         _ok(meta.get("engine_bilge",""))),
-        ("Oil level",            _pct(meta.get("oil_level",""))),
-        ("Coolant",              _ok(meta.get("coolant",""))),
-        ("Belt tension",         _ok(meta.get("belt",""))),
-        ("Sea cock + ignition",  _ok(meta.get("seacock",""))),
+        ("Last fill (L)",                    _ok(meta.get("last_fill_l",""))),
+        ("Engine hours since last fill (h)", _ok(meta.get("engine_hours_since_fill",""))),
+        ("Estimate 1 (engine hrs) L rem.",   _ok(meta.get("fuel_est1_l",""))),
+        ("Fuel gauge (%)",                   _ok(meta.get("gauge_pct",""))),
+        ("Estimate 2 (gauge) L remaining",   _ok(meta.get("fuel_est2_l",""))),
+        ("Fuel pre-filter",                  _ok(meta.get("fuel_pre_filter",""))),
+        ("Sea water filter",                 _ok(meta.get("seawater_filter",""))),
+        ("Engine bilge (aft)",               _ok(meta.get("engine_bilge",""))),
+        ("Coolant level",                    _ok(meta.get("coolant",""))),
+        ("Belt tension",                     _ok(meta.get("belt",""))),
+        ("Priming bulb",                     _ok(meta.get("priming_bulb",""))),
+        ("Sea cock + ignition",              _ok(meta.get("seacock",""))),
     ]
 
-    # Pad boat_checks so both lists have same length
-    n_rows_chk = max(len(boat_checks), len(engine_checks))
-    while len(boat_checks)  < n_rows_chk: boat_checks.append(("", ""))
-    while len(engine_checks) < n_rows_chk: engine_checks.append(("", ""))
+    # ---- End of trip (5 rows) ----
+    eot_checks = [
+        ("Arrival port",          _ok(meta.get("arrival_port",""))),
+        ("Total distance (nm)",   _ok(meta.get("total_traveled",""))),
+        ("Hull clean",            _ok(meta.get("hull_clean",""))),
+        ("Engine bilge dry",      _ok(meta.get("engine_bilge_end",""))),
+        ("Fore bilge dry",        _ok(meta.get("fore_bilge_end",""))),
+    ]
 
     style_chk_lbl = ParagraphStyle("ChkLbl", parent=styles["Normal"],
         fontSize=7, textColor=colors.white, fontName="Helvetica-Bold")
@@ -1130,65 +1158,98 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     style_chk_hdr = ParagraphStyle("ChkHdr", parent=styles["Normal"],
         fontSize=8, textColor=colors.white, fontName="Helvetica-Bold", alignment=1)
 
-    COLOR_BOAT_HDR = colors.HexColor("#2e6da4")
-    COLOR_ENG_HDR  = HEADER_COLOR
+    CW_LBL = 3.5*cm
+    CW_VAL = 8.0*cm
+    COL_WIDTHS_CHK = [CW_LBL, CW_VAL, CW_LBL, CW_VAL]
 
-    # Header row + data rows
-    # 4 columns: [boat_label | boat_value | eng_label | eng_value]
-    # Full width = 3.0+8.5+3.0+8.5 = 23 cm  → same as fiche
-    CW_BOAT_LBL = 4.5*cm
-    CW_BOAT_VAL = 3.5*cm
-    CW_ENG_LBL  = 5.5*cm
-    CW_ENG_VAL  = 3.5*cm   # total = 17 cm; remaining space via spacer
+    # Build LEFT sequence: BOAT_HDR + boat rows + ENG_HDR + engine rows
+    # Each item is either ("HDR", title) or ("ROW", label, value)
+    left_seq = [("HDR", "BOAT CHECK")]
+    for lbl, val in boat_checks:
+        left_seq.append(("ROW", lbl, val))
+    left_seq.append(("HDR", "ENGINE CHECK"))
+    for lbl, val in engine_checks:
+        left_seq.append(("ROW", lbl, val))
 
-    checkup_header = [
-        Paragraph("<b>BOAT CHECK</b>",   style_chk_hdr), "",
-        Paragraph("<b>ENGINE CHECK</b>", style_chk_hdr), "",
+    # Build RIGHT sequence: blanks aligned with left, then EOT_HDR + eot rows
+    # Right starts filling at the same row index; we pad with blank rows at top
+    # to align EOT header right after the left ENGINE CHECK header position.
+    # Total left rows (including headers): 1 + 4 + 1 + 12 = 18
+    # We want right column to show EOT starting from row 0 (run in parallel)
+    right_seq = [("HDR", "END OF TRIP CONTROL")]
+    for lbl, val in eot_checks:
+        right_seq.append(("ROW", lbl, val))
+
+    # Pad both sequences to same length with blank rows
+    n_rows = max(len(left_seq), len(right_seq))
+    while len(left_seq)  < n_rows: left_seq.append(("BLANK",))
+    while len(right_seq) < n_rows: right_seq.append(("BLANK",))
+
+    def _cell_lbl(text):
+        return Paragraph(f"<b>{text}</b>", style_chk_lbl) if text else ""
+
+    def _cell_val(text):
+        return Paragraph(str(text), style_chk_val) if text else ""
+
+    def _cell_hdr(text):
+        return Paragraph(f"<b>{text}</b>", style_chk_hdr)
+
+    checkup_rows = []
+    style_cmds   = []
+
+    for ri, (L, R) in enumerate(zip(left_seq, right_seq)):
+        # Left side
+        if L[0] == "HDR":
+            lc0 = _cell_hdr(L[1]); lc1 = ""
+            style_cmds += [
+                ("SPAN",       (0, ri), (1, ri)),
+                ("BACKGROUND", (0, ri), (1, ri), HEADER_COLOR),
+                ("ALIGN",      (0, ri), (1, ri), "CENTER"),
+            ]
+        elif L[0] == "ROW":
+            lc0 = _cell_lbl(L[1]); lc1 = _cell_val(L[2])
+            style_cmds.append(("BACKGROUND", (0, ri), (0, ri), HEADER_COLOR))
+        else:  # BLANK
+            lc0 = ""; lc1 = ""
+
+        # Right side
+        if R[0] == "HDR":
+            rc0 = _cell_hdr(R[1]); rc1 = ""
+            style_cmds += [
+                ("SPAN",       (2, ri), (3, ri)),
+                ("BACKGROUND", (2, ri), (3, ri), HEADER_COLOR),
+                ("ALIGN",      (2, ri), (3, ri), "CENTER"),
+            ]
+        elif R[0] == "ROW":
+            rc0 = _cell_lbl(R[1]); rc1 = _cell_val(R[2])
+            style_cmds.append(("BACKGROUND", (2, ri), (2, ri), HEADER_COLOR))
+        else:  # BLANK
+            rc0 = ""; rc1 = ""
+
+        checkup_rows.append([lc0, lc1, rc0, rc1])
+
+    # Base style
+    base_chk_style = [
+        ("FONTNAME",      (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE",      (0, 0), (-1, -1), 7),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID",          (0, 0), (-1, -1), 0.3, colors.HexColor("#bbbbbb")),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
+        ("TOPPADDING",    (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("BACKGROUND",    (0, 0), (-1, -1), colors.white),
     ]
+    # Alternating value cells (cols 1 and 3) on even data rows
+    for ri, (L, R) in enumerate(zip(left_seq, right_seq)):
+        if L[0] == "ROW" and ri % 2 == 0:
+            base_chk_style.append(("BACKGROUND", (1, ri), (1, ri), ALT_COLOR))
+        if R[0] == "ROW" and ri % 2 == 0:
+            base_chk_style.append(("BACKGROUND", (3, ri), (3, ri), ALT_COLOR))
 
-    checkup_rows = [checkup_header]
-    for (bl, bv), (el, ev_) in zip(boat_checks, engine_checks):
-        checkup_rows.append([
-            Paragraph(f"<b>{bl}</b>", style_chk_lbl) if bl else "",
-            Paragraph(str(bv), style_chk_val)         if bv else "",
-            Paragraph(f"<b>{el}</b>", style_chk_lbl) if el else "",
-            Paragraph(str(ev_), style_chk_val)        if ev_ else "",
-        ])
-
-    n_chk = len(checkup_rows)
-    checkup_style_cmds = [
-        # Header row
-        ("BACKGROUND",   (0,0), (-1,0),  HEADER_COLOR),
-        ("SPAN",         (0,0), (1,0)),
-        ("SPAN",         (2,0), (3,0)),
-        ("ALIGN",        (0,0), (-1,0),  "CENTER"),
-        # Boat label column background
-        ("BACKGROUND",   (0,1), (0,-1),  COLOR_BOAT_HDR),
-        # Engine label column background
-        ("BACKGROUND",   (2,1), (2,-1),  COLOR_ENG_HDR),
-        # Value cells
-        ("BACKGROUND",   (1,1), (1,-1),  colors.white),
-        ("BACKGROUND",   (3,1), (3,-1),  colors.white),
-        # Alternating rows on value columns
-        *[("BACKGROUND", (1,i), (1,i), ALT_COLOR)
-          for i in range(2, n_chk, 2)],
-        *[("BACKGROUND", (3,i), (3,i), ALT_COLOR)
-          for i in range(2, n_chk, 2)],
-        ("FONTNAME",     (0,0), (-1,-1), "Helvetica"),
-        ("FONTSIZE",     (0,0), (-1,-1), 7),
-        ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
-        ("GRID",         (0,0), (-1,-1), 0.3, colors.HexColor("#bbbbbb")),
-        ("LEFTPADDING",  (0,0), (-1,-1), 5),
-        ("RIGHTPADDING", (0,0), (-1,-1), 5),
-        ("TOPPADDING",   (0,0), (-1,-1), 3),
-        ("BOTTOMPADDING",(0,0), (-1,-1), 3),
-    ]
-
-    checkup_tbl = Table(
-        checkup_rows,
-        colWidths=[CW_BOAT_LBL, CW_BOAT_VAL, CW_ENG_LBL, CW_ENG_VAL],
-    )
-    checkup_tbl.setStyle(TableStyle(checkup_style_cmds))
+    all_chk_cmds = base_chk_style + style_cmds
+    checkup_tbl = Table(checkup_rows, colWidths=COL_WIDTHS_CHK)
+    checkup_tbl.setStyle(TableStyle(all_chk_cmds))
     content.append(checkup_tbl)
     content.append(Spacer(1, 14))
 
@@ -1230,7 +1291,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
             if idx >= 0:
                 miles_per_slot[slot] = float(cum_nm[idx])
 
-    # Engine minutes per slot  (stored as minutes now)
     engine_minutes_by_slot = {}
     if not df_events.empty and "timestamp" in df_events.columns and "engine_minutes" in df_events.columns:
         ev_eh = df_events.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
@@ -1241,7 +1301,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
             idx = np.searchsorted(eh_ts_ns, slot_ns, side="right") - 1
             engine_minutes_by_slot[slot] = float(eh_vals[idx]) if idx >= 0 else 0.0
 
-    # Equipment state per slot
     equipment_by_slot = {}
     if not df_events.empty and "timestamp" in df_events.columns:
         ev = df_events.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
@@ -1351,7 +1410,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
                     fmt(st.get("twd_m"), 0), fmt(st.get("hdg_m"), 0),
                     f"{miles:.1f}",
                     rem_str,
-                    engine_hhmm(em),   # ← h:mm format
+                    engine_hhmm(em),
                     fmt(st.get("tws_moy")), fmt(st.get("sog_moy")),
                     fmt(st.get("sog_max")), fmt(st.get("tws_max")),
                 ],
@@ -1398,7 +1457,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         ev_sorted_all = df_events.sort_values("timestamp").reset_index(drop=True) \
                         if "timestamp" in df_events.columns else df_events.copy()
 
-        # Split into NAV and SCIENCE events
         ev_nav = ev_sorted_all[ev_sorted_all["event_type"].isin(NAV_EVENT_TYPES)].reset_index(drop=True)
         ev_sci = ev_sorted_all[ev_sorted_all["event_type"].isin(SCIENCE_EVENT_TYPES)].reset_index(drop=True)
 
@@ -1433,14 +1491,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
                 et  = str(r.get("event_type",  "-"))
                 ed  = str(r.get("event_detail","-"))
 
-                if et == "NAV_COMMENT":
-                    detail_text = ed
-                elif et == "SCI_COMMENT":
-                    detail_text = ed
-                else:
-                    detail_text = ed
-
-                detail_para = Paragraph(detail_text, style_cell)
+                detail_para = Paragraph(ed, style_cell)
 
                 try:
                     ev_date   = pd.Timestamp(r.get("timestamp")).date()
@@ -1593,7 +1644,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
             if not np.isnan(v): avg_tws_str=f"{v:.1f} kn"
         except: pass
 
-    # Engine total from events (in minutes)
     eng_h_str="-"
     if not df_events.empty and "engine_minutes" in df_events.columns:
         try:
