@@ -222,7 +222,7 @@ def parse_nmea(file_path):
         "date_depart":"", "arrival":"",
         # boat check fields
         "bilges_dry":"", "portholes_closed":"", "seacocks_closed":"", "boat_stowed":"",
-        # engine check fields — new fuel fields
+        # engine check fields
         "last_fill_l":"", "engine_hours_since_fill":"",
         "fuel_est1_l":"", "fuel_est1_pct":"",
         "gauge_pct":"", "fuel_est2_l":"", "fuel_est2_pct":"",
@@ -234,53 +234,66 @@ def parse_nmea(file_path):
         "route_type":"",
     }
 
+    # -----------------------------------------------------------------
+    # FIX 1 — HEADER_KEYS mapping
+    # Keys must match EXACTLY the text written before " : " in the log,
+    # after stripping leading/trailing whitespace from the key part.
+    # The parser below does raw_key.strip() before comparing, so extra
+    # spaces in the log file (e.g. "ESTIMATE 1 (engine hours)   : ")
+    # are handled automatically.
+    # -----------------------------------------------------------------
     HEADER_KEYS = {
-        "SKIPPER"                           : "skipper",
-        "CREW"                              : "crew",
-        "FUEL"                              : "fuel_pct",
-        "DEPARTURE"                         : "departure",
-        "DESTINATION LAT"                   : "destination_lat",
-        "DESTINATION LON"                   : "destination_lon",
-        "DESTINATION"                       : "destination",
-        "INITIAL DISTANCE"                  : "initial_dist_nm",
-        "ENGINE"                            : "engine_start",
-        "DESSAL"                            : "dessal_start",
-        "SEA"                               : "sea_start",
-        "CTD KEEL"                          : "ctd_keel_start",
-        "DIRECT LEG"                        : "route_type",
-        "ROUTE TYPE"                        : "route_type",
+        "SKIPPER"                               : "skipper",
+        "CREW"                                  : "crew",
+        "FUEL"                                  : "fuel_pct",
+        "DEPARTURE"                             : "departure",
+        "DESTINATION LAT"                       : "destination_lat",
+        "DESTINATION LON"                       : "destination_lon",
+        "DESTINATION"                           : "destination",
+        "INITIAL DISTANCE"                      : "initial_dist_nm",
+        "ENGINE"                                : "engine_start",
+        "DESSAL"                                : "dessal_start",
+        "SEA"                                   : "sea_start",
+        "CTD KEEL"                              : "ctd_keel_start",
+        "DIRECT LEG"                            : "route_type",
+        "ROUTE TYPE"                            : "route_type",
         # Boat check
-        "BILGES DRY"                        : "bilges_dry",
-        "PORTHOLES CLOSED"                  : "portholes_closed",
-        "SEA COCKS CLOSED"                  : "seacocks_closed",
-        "BOAT STOWED"                       : "boat_stowed",
-        # Engine check — new fuel fields
-        "LAST FILL (L)"                     : "last_fill_l",
-        "ENGINE HOURS SINCE LAST FILL (h)"  : "engine_hours_since_fill",
-        "ESTIMATE 1 (engine hours)"         : "fuel_est1_l",
-        "GAUGE READING"                     : "gauge_pct",
-        "ESTIMATE 2 (gauge)"                : "fuel_est2_l",
-        # Legacy fuel field
-        "FUEL PRE-FILTER"                   : "fuel_pre_filter",
-        "SEA WATER FILTER"                  : "seawater_filter",
-        "SEAWATER FILTER"                   : "seawater_filter",
-        "ENGINE BILGE (AFT)"                : "engine_bilge",
-        "ENGINE BILGE"                      : "engine_bilge",
-        "OIL"                               : "oil_level",
-        "OIL LEVEL"                         : "oil_level",
-        "COOLANT"                           : "coolant",
-        "BELT"                              : "belt",
-        "BELT TENSION"                      : "belt",
-        "PRIMING BULB"                      : "priming_bulb",
-        "SEA COCK + IGNITION"               : "seacock",
-        "SEACOCK + IGNITION"                : "seacock",
+        "BILGES DRY"                            : "bilges_dry",
+        "PORTHOLES CLOSED"                      : "portholes_closed",
+        "SEA COCKS CLOSED"                      : "seacocks_closed",
+        "BOAT STOWED"                           : "boat_stowed",
+        # Engine check — fuel fields
+        "LAST FILL (L)"                         : "last_fill_l",
+        "ENGINE HOURS SINCE LAST FILL (h)"      : "engine_hours_since_fill",
+        "ESTIMATE 1 (engine hours)"             : "fuel_est1_l",
+        "GAUGE READING"                         : "gauge_pct",
+        "ESTIMATE 2 (gauge)"                    : "fuel_est2_l",
+        # Engine check — mechanical
+        "FUEL PRE-FILTER"                       : "fuel_pre_filter",
+        "SEA WATER FILTER"                      : "seawater_filter",
+        "SEAWATER FILTER"                       : "seawater_filter",
+        # FIX: disambiguate ENGINE BILGE variants — most specific first
+        "ENGINE BILGE (AFT)"                    : "engine_bilge",
+        "ENGINE BILGE (FWD)"                    : "engine_bilge_fwd",
+        # "ENGINE BILGE" alone → end-of-trip (matched last, after the (AFT)/(FWD) variants)
+        "OIL"                                   : "oil_level",
+        "OIL LEVEL"                             : "oil_level",
+        "COOLANT"                               : "coolant",
+        "BELT"                                  : "belt",
+        "BELT TENSION"                          : "belt",
+        "PRIMING BULB"                          : "priming_bulb",
+        "SEA COCK + IGNITION"                   : "seacock",
+        "SEACOCK + IGNITION"                    : "seacock",
         # End of trip control
-        "ARRIVAL PORT"                      : "arrival_port",
-        "TOTAL DISTANCE"                    : "total_traveled",
-        "HULL CLEAN"                        : "hull_clean",
-        "ENGINE BILGE"                      : "engine_bilge_end",
-        "FORE BILGE"                        : "fore_bilge_end",
+        "ARRIVAL PORT"                          : "arrival_port",
+        "TOTAL DISTANCE"                        : "total_traveled",
+        "HULL CLEAN"                            : "hull_clean",
+        "FORE BILGE"                            : "fore_bilge_end",
     }
+
+    # Separate entry for plain "ENGINE BILGE" → end-of-trip (lowest priority)
+    # We handle this after the loop so it doesn't shadow ENGINE BILGE (AFT).
+    ENGINE_BILGE_PLAIN_KEY = "ENGINE BILGE"
 
     cur_engine="OFF"; cur_dessal="OFF"; cur_main="OFF"
     cur_jib="OFF"; cur_staysail="OFF"; cur_stormjib="OFF"; cur_spinnaker="OFF"
@@ -299,12 +312,23 @@ def parse_nmea(file_path):
     for line in all_lines:
         line = line.strip()
 
-        # Header lines  (key : value, not NMEA, not EVENT)
+        # -----------------------------------------------------------------
+        # FIX 2 — Header parsing: strip whitespace from the key side so
+        # that "ESTIMATE 1 (engine hours)            : value" is matched
+        # correctly regardless of padding.
+        # -----------------------------------------------------------------
         if " : " in line and not line.startswith("$") and not line.startswith("# EVENT"):
+            raw_key, _, raw_val = line.partition(" : ")
+            normalized_key = raw_key.strip()
+            matched = False
             for hk, mk in HEADER_KEYS.items():
-                if line.startswith(hk + " :") or line.startswith(hk + ":"):
-                    meta[mk] = line.split(" : ", 1)[-1].strip() if " : " in line else line.split(":",1)[-1].strip()
+                if normalized_key == hk:
+                    meta[mk] = raw_val.strip()
+                    matched = True
                     break
+            # Plain "ENGINE BILGE" (end-of-trip) — only if no specific variant matched
+            if not matched and normalized_key == ENGINE_BILGE_PLAIN_KEY:
+                meta["engine_bilge_end"] = raw_val.strip()
 
         # Events
         if line.startswith("# EVENT"):
@@ -799,7 +823,6 @@ def build_track_map(df, meta):
 COLOR_NAV        = colors.HexColor("#cce5ff")
 COLOR_SCIENCE    = colors.HexColor("#d4edda")
 COLOR_ENGINE     = colors.HexColor("#f8d7da")
-# Comments are white — no colour
 COLOR_NAV_CMT    = colors.white
 COLOR_SCI_CMT    = colors.white
 COLOR_OTHER      = colors.white
@@ -817,7 +840,7 @@ def event_color(etype):
 # PDF HELPERS
 # =========================================================
 
-HEADER_COLOR    = colors.HexColor("#1a3a5c")   # dark navy — used for all label cells
+HEADER_COLOR    = colors.HexColor("#1a3a5c")
 ALT_COLOR       = colors.HexColor("#eaf0f8")
 COLOR_HIGHLIGHT = colors.HexColor("#fff9c4")
 COLOR_ENG_LAST  = colors.HexColor("#f8d7da")
@@ -1042,14 +1065,10 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
 
     # -------------------------------------------------------
     # VOYAGE SUMMARY CARD
-    # All label cells: HEADER_COLOR (dark navy)
-    # Same column widths: [3.0cm, 8.5cm, 3.0cm, 8.5cm] = 23cm total
     # -------------------------------------------------------
     arrival_str = meta.get("arrival","") or ("IN PROGRESS" if in_progress else "—")
-
     route_type_str = meta.get("route_type","") or "—"
 
-    # 6 rows, 4 cols — removed Fuel and Sea State rows
     fiche_data = [
         ["DATE",        meta.get("date_depart","—"),  "SKIPPER",      meta.get("skipper","—")],
         ["CREW",        meta.get("crew","—"),          "",             ""],
@@ -1076,11 +1095,10 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         for r in fiche_data
     ]
 
-    # Unified dark navy for ALL label columns (col 0 and col 2)
     fiche_style = TableStyle([
         ("BACKGROUND",    (0,0), (-1,-1), colors.white),
-        ("BACKGROUND",    (0,0), (0,-1),  HEADER_COLOR),   # all labels col 0
-        ("BACKGROUND",    (2,0), (2,-1),  HEADER_COLOR),   # all labels col 2
+        ("BACKGROUND",    (0,0), (0,-1),  HEADER_COLOR),
+        ("BACKGROUND",    (2,0), (2,-1),  HEADER_COLOR),
         ("BACKGROUND",    (1,DEP_ROW), (1,DEP_ROW), dep_bg),
         ("BACKGROUND",    (1,ARR_ROW), (1,ARR_ROW), arr_bg),
         ("FONTNAME",      (0,0), (-1,-1), "Helvetica"),
@@ -1091,7 +1109,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         ("TOPPADDING",    (0,0), (-1,-1), 4), ("BOTTOMPADDING", (0,0), (-1,-1), 4),
     ])
 
-    # Fixed total width = 3.0 + 8.5 + 3.0 + 8.5 = 23 cm
     COL_WIDTHS_FICHE = [3.0*cm, 8.5*cm, 3.0*cm, 8.5*cm]
     tf = Table(fiche_display, colWidths=COL_WIDTHS_FICHE)
     tf.setStyle(fiche_style)
@@ -1099,27 +1116,13 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     content.append(Spacer(1, 8))
 
     # -------------------------------------------------------
-    # CHECKUP — 2-column layout, all English, all cells filled
-    #
-    # LEFT COLUMN  (col 0=label, col 1=value):
-    #   [BOAT CHECK header]
-    #   4 boat check rows
-    #   [ENGINE CHECK header]
-    #   12 engine check rows
-    #
-    # RIGHT COLUMN (col 2=label, col 3=value):
-    #   filled in parallel; once left content runs out →
-    #   [END OF TRIP CONTROL header]
-    #   5 EOT rows, then blanks to match height
-    #
-    # Same total width as fiche: 3.5 + 8.0 + 3.5 + 8.0 = 23 cm
+    # CHECKUP
     # -------------------------------------------------------
     content.append(Paragraph("CHECKUP", style_section))
 
     def _ok(val):
         return str(val) if val else "—"
 
-    # ---- Boat check (4 rows) ----
     boat_checks = [
         ("Bilges dry",       _ok(meta.get("bilges_dry",""))),
         ("Portholes closed", _ok(meta.get("portholes_closed",""))),
@@ -1127,7 +1130,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         ("Boat stowed",      _ok(meta.get("boat_stowed",""))),
     ]
 
-    # ---- Engine check (12 rows) ----
     engine_checks = [
         ("Last fill (L)",                    _ok(meta.get("last_fill_l",""))),
         ("Engine hours since last fill (h)", _ok(meta.get("engine_hours_since_fill",""))),
@@ -1143,7 +1145,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         ("Sea cock + ignition",              _ok(meta.get("seacock",""))),
     ]
 
-    # ---- End of trip (5 rows) ----
     eot_checks = [
         ("Arrival port",          _ok(meta.get("arrival_port",""))),
         ("Total distance (nm)",   _ok(meta.get("total_traveled",""))),
@@ -1162,8 +1163,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     CW_VAL = 8.0*cm
     COL_WIDTHS_CHK = [CW_LBL, CW_VAL, CW_LBL, CW_VAL]
 
-    # Build LEFT sequence: BOAT_HDR + boat rows + ENG_HDR + engine rows
-    # Each item is either ("HDR", title) or ("ROW", label, value)
     left_seq = [("HDR", "BOAT CHECK")]
     for lbl, val in boat_checks:
         left_seq.append(("ROW", lbl, val))
@@ -1171,16 +1170,10 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     for lbl, val in engine_checks:
         left_seq.append(("ROW", lbl, val))
 
-    # Build RIGHT sequence: blanks aligned with left, then EOT_HDR + eot rows
-    # Right starts filling at the same row index; we pad with blank rows at top
-    # to align EOT header right after the left ENGINE CHECK header position.
-    # Total left rows (including headers): 1 + 4 + 1 + 12 = 18
-    # We want right column to show EOT starting from row 0 (run in parallel)
     right_seq = [("HDR", "END OF TRIP CONTROL")]
     for lbl, val in eot_checks:
         right_seq.append(("ROW", lbl, val))
 
-    # Pad both sequences to same length with blank rows
     n_rows = max(len(left_seq), len(right_seq))
     while len(left_seq)  < n_rows: left_seq.append(("BLANK",))
     while len(right_seq) < n_rows: right_seq.append(("BLANK",))
@@ -1198,7 +1191,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     style_cmds   = []
 
     for ri, (L, R) in enumerate(zip(left_seq, right_seq)):
-        # Left side
         if L[0] == "HDR":
             lc0 = _cell_hdr(L[1]); lc1 = ""
             style_cmds += [
@@ -1209,10 +1201,9 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         elif L[0] == "ROW":
             lc0 = _cell_lbl(L[1]); lc1 = _cell_val(L[2])
             style_cmds.append(("BACKGROUND", (0, ri), (0, ri), HEADER_COLOR))
-        else:  # BLANK
+        else:
             lc0 = ""; lc1 = ""
 
-        # Right side
         if R[0] == "HDR":
             rc0 = _cell_hdr(R[1]); rc1 = ""
             style_cmds += [
@@ -1223,12 +1214,11 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         elif R[0] == "ROW":
             rc0 = _cell_lbl(R[1]); rc1 = _cell_val(R[2])
             style_cmds.append(("BACKGROUND", (2, ri), (2, ri), HEADER_COLOR))
-        else:  # BLANK
+        else:
             rc0 = ""; rc1 = ""
 
         checkup_rows.append([lc0, lc1, rc0, rc1])
 
-    # Base style
     base_chk_style = [
         ("FONTNAME",      (0, 0), (-1, -1), "Helvetica"),
         ("FONTSIZE",      (0, 0), (-1, -1), 7),
@@ -1240,7 +1230,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("BACKGROUND",    (0, 0), (-1, -1), colors.white),
     ]
-    # Alternating value cells (cols 1 and 3) on even data rows
     for ri, (L, R) in enumerate(zip(left_seq, right_seq)):
         if L[0] == "ROW" and ri % 2 == 0:
             base_chk_style.append(("BACKGROUND", (1, ri), (1, ri), ALT_COLOR))
