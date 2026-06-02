@@ -50,9 +50,12 @@ spi_state      = "OFF"
 sea_state = "0"
 
 hypernet_state      = "OFF"
+hypernet_station_id = ""     # set when hypernet on, cleared on hypernet off
 net_state           = "OFF"
 inline_state        = "OFF"
 filtration_state    = "OFF"
+bio_state           = "OFF"
+bio_station_id      = ""     # set when bio on, cleared on bio off
 ctd_keel_state      = "OFF"
 ctd_profile_state   = "OFF"
 ctd_intercomp_state = "OFF"
@@ -456,7 +459,18 @@ def engine_on_sequence():
 
 FILTRATION_SIZES = ["micro", "nano", "pico"]
 
-def ask_filtration_size(prompt="  Filter size"):
+def ask_station_id(prefix):
+    """
+    Ask for a 3-digit station number and return the full station ID.
+    Example: prefix='Vela_Lab_hyp_st', input '005' → 'Vela_Lab_hyp_st(005)'
+    """
+    while True:
+        raw = input(f"  Station ID — {prefix}_XXX, enter 3 digits : ").strip()
+        if re.match(r"^\d{3}$", raw):
+            return f"{prefix}_{raw}"
+        print("  Please enter exactly 3 digits (e.g. 005).")
+
+
     while True:
         ans = input(f"{prompt} (micro/nano/pico) : ").strip().lower()
         if ans in FILTRATION_SIZES:
@@ -634,7 +648,9 @@ def terminal_event_listener():
     global main_state, main_reef
     global jib_state, staysail_state, stormjib_state, spi_state
     global sea_state
-    global hypernet_state, net_state, inline_state, filtration_state
+    global hypernet_state, hypernet_station_id
+    global net_state, inline_state, filtration_state
+    global bio_state, bio_station_id
     global ctd_keel_state, ctd_profile_state, ctd_intercomp_state
 
     def print_help():
@@ -655,15 +671,20 @@ def terminal_event_listener():
         print(" n: text         (navigation comment)")
         print(" s: text         (science comment)")
         print(" state           (show current state)")
-        print("\n--- Science ---")
-        print(" hypernet on/off")
-        print(" net on/off")
-        print(" inline on/off")
-        print(" filtration on   (asks filter size)")
+        print("\n--- Science — HYPERNET station ---")
+        print(" hypernet on     (asks station ID → unlocks turbidity, secchi)")
+        print(" hypernet off")
+        print(" turbidity       (triplicate — requires hypernet on)")
+        print(" secchi          (Secchi disk depth — requires hypernet on)")
+        print("\n--- Science — BIO station ---")
+        print(" bio on          (asks station ID → unlocks filtration, bucket, net)")
+        print(" bio off")
+        print(" filtration on   (asks filter size — requires bio on)")
         print(" filtration off  (asks size + volume + saturation)")
-        print(" turbidity       (triplicate measurements)")
-        print(" secchi          (Secchi disk depth)")
-        print(" bucket          (instant event)")
+        print(" bucket          (instant event — requires bio on)")
+        print(" net on/off      (requires bio on)")
+        print(" inline on/off")
+        print("\n--- Science — CTD ---")
         print(" ctd keel on/off")
         print(" ctd profile on/off")
         print(" ctd intercomp on/off")
@@ -687,11 +708,16 @@ def terminal_event_listener():
         print(f" Storm jib : {stormjib_state}")
         print(f" Spi       : {spi_state}")
         print(f" Sea state : {sea_state}")
-        print("--- Science ---")
-        print(f" Hypernet     : {hypernet_state}")
-        print(f" Net          : {net_state}")
+        print("--- Science — HYPERNET ---")
+        hyp_id = f"  [{hypernet_station_id}]" if hypernet_station_id else ""
+        print(f" Hypernet     : {hypernet_state}{hyp_id}")
         print(f" Inline       : {inline_state}")
+        print("--- Science — BIO ---")
+        bio_id = f"  [{bio_station_id}]" if bio_station_id else ""
+        print(f" Bio          : {bio_state}{bio_id}")
+        print(f" Net          : {net_state}")
         print(f" Filtration   : {filtration_state}")
+        print("--- Science — CTD ---")
         print(f" CTD keel     : {ctd_keel_state}")
         print(f" CTD profile  : {ctd_profile_state}")
         print(f" CTD intercomp: {ctd_intercomp_state}")
@@ -758,59 +784,120 @@ def terminal_event_listener():
                 else:
                     print("  Usage : s: your comment")
 
-            # ---- Science ----
-            elif cmd_lower == "filtration on":
-                size = filtration_on_sequence()
-                filtration_state = "ON"
-                write_event(f"FILTRATION ON | SIZE {size.upper()}")
+            # ---- Science — HYPERNET station ----
+            elif cmd_lower == "hypernet on":
+                if hypernet_state == "ON":
+                    print(f"  Hypernet already ON (station {hypernet_station_id}). Do 'hypernet off' first.")
+                else:
+                    station_id = ask_station_id("Vela_Lab_hyp_st")
+                    hypernet_station_id = station_id
+                    hypernet_state = "ON"
+                    write_event(f"HYPERNET ON | STATION {station_id}")
 
-            elif cmd_lower == "filtration off":
-                size, volume, saturated = filtration_off_sequence()
-                filtration_state = "OFF"
-                sat_str = "YES" if saturated else "NO"
-                write_event(
-                    f"FILTRATION OFF | SIZE {size.upper()} "
-                    f"| VOLUME {volume:.1f} mL | SATURATION {sat_str}"
-                )
+            elif cmd_lower == "hypernet off":
+                if hypernet_state == "OFF":
+                    print("  Hypernet is already OFF.")
+                else:
+                    write_event(f"HYPERNET OFF | STATION {hypernet_station_id}")
+                    hypernet_state = "OFF"
+                    hypernet_station_id = ""
 
             elif cmd_lower == "turbidity":
-                vals = []
-                for i in range(1, 4):
-                    while True:
-                        try:
-                            v = float(input(f"  Turbidity {i} : ").strip())
-                            vals.append(v)
-                            break
-                        except ValueError:
-                            print("  Please enter a numeric value.")
-                write_event(
-                    f"TURBIDITY | "
-                    f"T1={vals[0]:.4f} | T2={vals[1]:.4f} | T3={vals[2]:.4f}"
-                )
+                if hypernet_state != "ON":
+                    print("  Cannot run turbidity: hypernet station not active. Run 'hypernet on' first.")
+                else:
+                    vals = []
+                    for i in range(1, 4):
+                        while True:
+                            try:
+                                v = float(input(f"  Turbidity {i} : ").strip())
+                                vals.append(v)
+                                break
+                            except ValueError:
+                                print("  Please enter a numeric value.")
+                    write_event(
+                        f"TURBIDITY | STATION {hypernet_station_id} "
+                        f"| T1={vals[0]:.4f} | T2={vals[1]:.4f} | T3={vals[2]:.4f}"
+                    )
 
             elif cmd_lower == "secchi":
-                while True:
-                    try:
-                        depth = float(input("  Profondeur du disque Secchi (m) : ").strip())
-                        if depth < 0: raise ValueError("must be >= 0")
-                        break
-                    except ValueError as e:
-                        print(f"  Invalid value ({e}), try again.")
-                write_event(f"SECCHI | DEPTH {depth:.2f} m")
+                if hypernet_state != "ON":
+                    print("  Cannot run secchi: hypernet station not active. Run 'hypernet on' first.")
+                else:
+                    while True:
+                        try:
+                            depth = float(input("  Secchi disk depth (m) : ").strip())
+                            if depth < 0: raise ValueError("must be >= 0")
+                            break
+                        except ValueError as e:
+                            print(f"  Invalid value ({e}), try again.")
+                    write_event(f"SECCHI | STATION {hypernet_station_id} | DEPTH {depth:.2f} m")
 
+            # ---- Science — BIO station ----
+            elif cmd_lower == "bio on":
+                if bio_state == "ON":
+                    print(f"  Bio already ON (station {bio_station_id}). Do 'bio off' first.")
+                else:
+                    station_id = ask_station_id("Vela_Lab_bio_st")
+                    bio_station_id = station_id
+                    bio_state = "ON"
+                    write_event(f"BIO ON | STATION {station_id}")
+
+            elif cmd_lower == "bio off":
+                if bio_state == "OFF":
+                    print("  Bio is already OFF.")
+                else:
+                    write_event(f"BIO OFF | STATION {bio_station_id}")
+                    bio_state = "OFF"
+                    bio_station_id = ""
+
+            elif cmd_lower == "filtration on":
+                if bio_state != "ON":
+                    print("  Cannot start filtration: bio station not active. Run 'bio on' first.")
+                else:
+                    size = filtration_on_sequence()
+                    filtration_state = "ON"
+                    write_event(f"FILTRATION ON | STATION {bio_station_id} | SIZE {size.upper()}")
+
+            elif cmd_lower == "filtration off":
+                if filtration_state != "ON":
+                    print("  Filtration is not currently ON.")
+                else:
+                    size, volume, saturated = filtration_off_sequence()
+                    filtration_state = "OFF"
+                    sat_str = "YES" if saturated else "NO"
+                    write_event(
+                        f"FILTRATION OFF | STATION {bio_station_id} | SIZE {size.upper()} "
+                        f"| VOLUME {volume:.1f} mL | SATURATION {sat_str}"
+                    )
+
+            elif cmd_lower == "bucket":
+                if bio_state != "ON":
+                    print("  Cannot log bucket: bio station not active. Run 'bio on' first.")
+                else:
+                    write_event(f"BUCKET | STATION {bio_station_id}")
+
+            elif cmd_lower == "net on":
+                if bio_state != "ON":
+                    print("  Cannot start net: bio station not active. Run 'bio on' first.")
+                else:
+                    net_state = "ON"
+                    write_event(f"NET ON | STATION {bio_station_id}")
+
+            elif cmd_lower == "net off":
+                net_state = "OFF"
+                write_event(f"NET OFF | STATION {bio_station_id}")
+
+            elif cmd_lower == "inline on":          inline_state = "ON";      write_event("INLINE ON")
+            elif cmd_lower == "inline off":         inline_state = "OFF";     write_event("INLINE OFF")
+
+            # ---- Science — CTD ----
             elif cmd_lower == "ctd keel on":        ctd_keel_state = "ON";        write_event("CTD KEEL ON")
             elif cmd_lower == "ctd keel off":       ctd_keel_state = "OFF";       write_event("CTD KEEL OFF")
             elif cmd_lower == "ctd profile on":     ctd_profile_state = "ON";     write_event("CTD PROFILE ON")
             elif cmd_lower == "ctd profile off":    ctd_profile_state = "OFF";    write_event("CTD PROFILE OFF")
             elif cmd_lower == "ctd intercomp on":   ctd_intercomp_state = "ON";   write_event("CTD INTERCOMP ON")
             elif cmd_lower == "ctd intercomp off":  ctd_intercomp_state = "OFF";  write_event("CTD INTERCOMP OFF")
-
-            elif cmd_lower == "hypernet on":        hypernet_state = "ON";    write_event("HYPERNET ON")
-            elif cmd_lower == "hypernet off":       hypernet_state = "OFF";   write_event("HYPERNET OFF")
-            elif cmd_lower == "net on":             net_state = "ON";         write_event("NET ON")
-            elif cmd_lower == "net off":            net_state = "OFF";        write_event("NET OFF")
-            elif cmd_lower == "inline on":          inline_state = "ON";      write_event("INLINE ON")
-            elif cmd_lower == "inline off":         inline_state = "OFF";     write_event("INLINE OFF")
 
             elif cmd_lower == "bucket":
                 write_event("BUCKET")
