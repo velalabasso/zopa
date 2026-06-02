@@ -110,7 +110,6 @@ def elapsed_dhms(td):
 
 
 def engine_hhmm(total_minutes):
-    """Format engine time as  Xh YYmin  from total minutes (float)."""
     if total_minutes is None or np.isnan(float(total_minutes)):
         return "-"
     total_m = int(round(float(total_minutes)))
@@ -152,7 +151,6 @@ def haversine_vec(lat1, lon1, lat2, lon2):
 # =========================================================
 
 def classify_event(raw):
-    # Strip optional timestamp prefix  "2024-06-01T12:34:56Z | ENGINE ON"
     if " | " in raw:
         raw = raw.split(" | ", 1)[1].strip()
 
@@ -193,7 +191,6 @@ def classify_event(raw):
     else:                                  return "OTHER",          raw
 
 
-# Science event types set (used for routing to the right table)
 SCIENCE_EVENT_TYPES = {"HYPERNET","NET","INLINE","CTD_KEEL","CTD_PROFILE","CTD_INTERCOMP","SCI_COMMENT"}
 NAV_EVENT_TYPES     = {"ENGINE","MAIN","JIB","STAYSAIL","STORMJIB","SPINNAKER","DESSAL",
                        "SEA","ARRIVAL","OTHER","NAV_COMMENT"}
@@ -220,28 +217,17 @@ def parse_nmea(file_path):
         "initial_dist_nm":"", "engine_start":"",
         "dessal_start":"", "sea_start":"", "ctd_keel_start":"",
         "date_depart":"", "arrival":"",
-        # boat check fields
         "bilges_dry":"", "portholes_closed":"", "seacocks_closed":"", "boat_stowed":"",
-        # engine check fields
         "last_fill_l":"", "engine_hours_since_fill":"",
         "fuel_est1_l":"", "fuel_est1_pct":"",
         "gauge_pct":"", "fuel_est2_l":"", "fuel_est2_pct":"",
         "fuel_pre_filter":"", "seawater_filter":"", "engine_bilge":"",
         "oil_level":"", "coolant":"", "belt":"", "seacock":"", "priming_bulb":"",
-        # end of trip control
         "arrival_port":"", "total_traveled":"",
         "hull_clean":"", "engine_bilge_end":"", "fore_bilge_end":"",
         "route_type":"",
     }
 
-    # -----------------------------------------------------------------
-    # FIX 1 — HEADER_KEYS mapping
-    # Keys must match EXACTLY the text written before " : " in the log,
-    # after stripping leading/trailing whitespace from the key part.
-    # The parser below does raw_key.strip() before comparing, so extra
-    # spaces in the log file (e.g. "ESTIMATE 1 (engine hours)   : ")
-    # are handled automatically.
-    # -----------------------------------------------------------------
     HEADER_KEYS = {
         "SKIPPER"                               : "skipper",
         "CREW"                                  : "crew",
@@ -257,25 +243,20 @@ def parse_nmea(file_path):
         "CTD KEEL"                              : "ctd_keel_start",
         "DIRECT LEG"                            : "route_type",
         "ROUTE TYPE"                            : "route_type",
-        # Boat check
         "BILGES DRY"                            : "bilges_dry",
         "PORTHOLES CLOSED"                      : "portholes_closed",
         "SEA COCKS CLOSED"                      : "seacocks_closed",
         "BOAT STOWED"                           : "boat_stowed",
-        # Engine check — fuel fields
         "LAST FILL (L)"                         : "last_fill_l",
         "ENGINE HOURS SINCE LAST FILL (h)"      : "engine_hours_since_fill",
         "ESTIMATE 1 (engine hours)"             : "fuel_est1_l",
         "GAUGE READING"                         : "gauge_pct",
         "ESTIMATE 2 (gauge)"                    : "fuel_est2_l",
-        # Engine check — mechanical
         "FUEL PRE-FILTER"                       : "fuel_pre_filter",
         "SEA WATER FILTER"                      : "seawater_filter",
         "SEAWATER FILTER"                       : "seawater_filter",
-        # FIX: disambiguate ENGINE BILGE variants — most specific first
         "ENGINE BILGE (AFT)"                    : "engine_bilge",
         "ENGINE BILGE (FWD)"                    : "engine_bilge_fwd",
-        # "ENGINE BILGE" alone → end-of-trip (matched last, after the (AFT)/(FWD) variants)
         "OIL"                                   : "oil_level",
         "OIL LEVEL"                             : "oil_level",
         "COOLANT"                               : "coolant",
@@ -284,15 +265,12 @@ def parse_nmea(file_path):
         "PRIMING BULB"                          : "priming_bulb",
         "SEA COCK + IGNITION"                   : "seacock",
         "SEACOCK + IGNITION"                    : "seacock",
-        # End of trip control
         "ARRIVAL PORT"                          : "arrival_port",
         "TOTAL DISTANCE"                        : "total_traveled",
         "HULL CLEAN"                            : "hull_clean",
         "FORE BILGE"                            : "fore_bilge_end",
     }
 
-    # Separate entry for plain "ENGINE BILGE" → end-of-trip (lowest priority)
-    # We handle this after the loop so it doesn't shadow ENGINE BILGE (AFT).
     ENGINE_BILGE_PLAIN_KEY = "ENGINE BILGE"
 
     cur_engine="OFF"; cur_dessal="OFF"; cur_main="OFF"
@@ -300,9 +278,8 @@ def parse_nmea(file_path):
     cur_sea="0"; cur_hypernet="OFF"; cur_net="OFF"; cur_inline="OFF"
     cur_ctd_keel="OFF"; cur_ctd_profile="OFF"; cur_ctd_intercomp="OFF"
 
-    # Engine time tracking — accumulate in MINUTES for precision
-    engine_on_since       = None   # datetime of last ENGINE ON
-    engine_minutes_cum    = 0.0    # cumulative completed sessions (minutes)
+    engine_on_since       = None
+    engine_minutes_cum    = 0.0
 
     open_func = gzip.open if file_path.endswith(".gz") else open
 
@@ -312,11 +289,6 @@ def parse_nmea(file_path):
     for line in all_lines:
         line = line.strip()
 
-        # -----------------------------------------------------------------
-        # FIX 2 — Header parsing: strip whitespace from the key side so
-        # that "ESTIMATE 1 (engine hours)            : value" is matched
-        # correctly regardless of padding.
-        # -----------------------------------------------------------------
         if " : " in line and not line.startswith("$") and not line.startswith("# EVENT"):
             raw_key, _, raw_val = line.partition(" : ")
             normalized_key = raw_key.strip()
@@ -326,11 +298,9 @@ def parse_nmea(file_path):
                     meta[mk] = raw_val.strip()
                     matched = True
                     break
-            # Plain "ENGINE BILGE" (end-of-trip) — only if no specific variant matched
             if not matched and normalized_key == ENGINE_BILGE_PLAIN_KEY:
                 meta["engine_bilge_end"] = raw_val.strip()
 
-        # Events
         if line.startswith("# EVENT"):
             import re
             m_ts = re.match(r"# EVENT \[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\] : (.*)", line)
@@ -1116,21 +1086,19 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     content.append(Spacer(1, 8))
 
     # -------------------------------------------------------
-    # CHECKUP
+    # CHECKUP — engine + boat + end of trip, 2 colonnes sans ligne vide
     # -------------------------------------------------------
     content.append(Paragraph("CHECKUP", style_section))
 
     def _ok(val):
         return str(val) if val else "—"
 
-    boat_checks = [
-        ("Bilges dry",       _ok(meta.get("bilges_dry",""))),
-        ("Portholes closed", _ok(meta.get("portholes_closed",""))),
-        ("Sea cocks closed", _ok(meta.get("seacocks_closed",""))),
-        ("Boat stowed",      _ok(meta.get("boat_stowed",""))),
-    ]
+    # Construction de la liste plate dans l'ordre souhaité :
+    # ENGINE CHECK → BOAT CHECK → END OF TRIP CONTROL
+    all_entries = []
 
-    engine_checks = [
+    all_entries.append(("HDR", "ENGINE CHECK"))
+    for lbl, val in [
         ("Last fill (L)",                    _ok(meta.get("last_fill_l",""))),
         ("Engine hours since last fill (h)", _ok(meta.get("engine_hours_since_fill",""))),
         ("Estimate 1 (engine hrs) L rem.",   _ok(meta.get("fuel_est1_l",""))),
@@ -1143,15 +1111,37 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         ("Belt tension",                     _ok(meta.get("belt",""))),
         ("Priming bulb",                     _ok(meta.get("priming_bulb",""))),
         ("Sea cock + ignition",              _ok(meta.get("seacock",""))),
-    ]
+    ]:
+        all_entries.append(("ROW", lbl, val))
 
-    eot_checks = [
-        ("Arrival port",          _ok(meta.get("arrival_port",""))),
-        ("Total distance (nm)",   _ok(meta.get("total_traveled",""))),
-        ("Hull clean",            _ok(meta.get("hull_clean",""))),
-        ("Engine bilge dry",      _ok(meta.get("engine_bilge_end",""))),
-        ("Fore bilge dry",        _ok(meta.get("fore_bilge_end",""))),
-    ]
+    all_entries.append(("HDR", "BOAT CHECK"))
+    for lbl, val in [
+        ("Bilges dry",       _ok(meta.get("bilges_dry",""))),
+        ("Portholes closed", _ok(meta.get("portholes_closed",""))),
+        ("Sea cocks closed", _ok(meta.get("seacocks_closed",""))),
+        ("Boat stowed",      _ok(meta.get("boat_stowed",""))),
+    ]:
+        all_entries.append(("ROW", lbl, val))
+
+    all_entries.append(("HDR", "END OF TRIP CONTROL"))
+    for lbl, val in [
+        ("Arrival port",        _ok(meta.get("arrival_port",""))),
+        ("Total distance (nm)", _ok(meta.get("total_traveled",""))),
+        ("Hull clean",          _ok(meta.get("hull_clean",""))),
+        ("Engine bilge dry",    _ok(meta.get("engine_bilge_end",""))),
+        ("Fore bilge dry",      _ok(meta.get("fore_bilge_end",""))),
+    ]:
+        all_entries.append(("ROW", lbl, val))
+
+    # Répartition en 2 colonnes équilibrées sans ligne vide
+    mid = math.ceil(len(all_entries) / 2)
+    left_seq  = all_entries[:mid]
+    right_seq = all_entries[mid:]
+
+    while len(right_seq) < len(left_seq):
+        right_seq.append(("BLANK",))
+    while len(left_seq) < len(right_seq):
+        left_seq.append(("BLANK",))
 
     style_chk_lbl = ParagraphStyle("ChkLbl", parent=styles["Normal"],
         fontSize=7, textColor=colors.white, fontName="Helvetica-Bold")
@@ -1163,27 +1153,10 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     CW_VAL = 8.0*cm
     COL_WIDTHS_CHK = [CW_LBL, CW_VAL, CW_LBL, CW_VAL]
 
-    left_seq = [("HDR", "BOAT CHECK")]
-    for lbl, val in boat_checks:
-        left_seq.append(("ROW", lbl, val))
-    left_seq.append(("HDR", "ENGINE CHECK"))
-    for lbl, val in engine_checks:
-        left_seq.append(("ROW", lbl, val))
-
-    right_seq = [("HDR", "END OF TRIP CONTROL")]
-    for lbl, val in eot_checks:
-        right_seq.append(("ROW", lbl, val))
-
-    n_rows = max(len(left_seq), len(right_seq))
-    while len(left_seq)  < n_rows: left_seq.append(("BLANK",))
-    while len(right_seq) < n_rows: right_seq.append(("BLANK",))
-
     def _cell_lbl(text):
         return Paragraph(f"<b>{text}</b>", style_chk_lbl) if text else ""
-
     def _cell_val(text):
         return Paragraph(str(text), style_chk_val) if text else ""
-
     def _cell_hdr(text):
         return Paragraph(f"<b>{text}</b>", style_chk_hdr)
 
@@ -1258,7 +1231,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     except:
         init_dist_nm = np.nan
 
-    # Cumulative distance
     miles_per_slot = {}
     if not df2.empty and hourly_slots:
         lats_v = df2["lat_raw"].values;  lons_v = df2["lon_raw"].values
@@ -1706,7 +1678,6 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     content.append(ts_tbl)
     content.append(Spacer(1, 16))
 
-    # --- TRACK CHART ---
     map_img = build_track_map(df, meta)
     if map_img is not None:
         content.append(Paragraph("TRACK CHART", style_section))
@@ -1756,7 +1727,6 @@ for log_dir_name in os.listdir(base_folder):
 
     df = df.sort_values("datetime").reset_index(drop=True)
 
-    # XLSX — 1 line per minute
     df_xlsx = df.copy()
     if "datetime" in df_xlsx.columns and not df_xlsx.empty:
         try:
