@@ -58,6 +58,7 @@ ctd_profile_state   = "OFF"
 ctd_intercomp_state = "OFF"
 
 _shutdown_requested = False
+_destination_port   = ""   # filled after setup, used in shutdown
 
 # =========================================================
 # DISPLAY BUFFER
@@ -86,48 +87,55 @@ def _buffered_print(line):
 def _sigint_handler(signum, frame):
     global _shutdown_requested
     if _shutdown_requested:
-        print("\n(shutdown already in progress…)")
+        print("\n(shutdown already in progress...)")
         return
     _shutdown_requested = True
-    print("\n\n⚓  SHUTDOWN REQUESTED")
-    _ask_arrival_and_close()
+    print("\n\n⚓  SHUTDOWN REQUESTED", flush=True)
+    _ask_arrival_and_close(_destination_port)
 
 
 def _ask_arrival_and_close(default_port=""):
     global event_log_file, distance_traveled_nm
 
-    try:
-        prompt = f"Arrival port [{default_port}] : " if default_port else "Arrival port : "
-        arrival = input(prompt).strip()
-        if not arrival:
-            arrival = default_port
-    except (EOFError, KeyboardInterrupt):
+    print(flush=True)
+    # Arrival port: 'ok' → use the destination entered at setup
+    raw_port = input(
+        f"Arrival port [Enter 'ok' to use '{default_port}'] : " if default_port
+        else "Arrival port : "
+    ).strip()
+    if raw_port.lower() == "ok" and default_port:
+        arrival = default_port
+    elif raw_port:
+        arrival = raw_port
+    else:
         arrival = default_port
 
     if arrival:
         write_event(f"ARRIVAL : {arrival}")
     write_event(f"TOTAL TRAVELED : {distance_traveled_nm:.1f} nm")
 
-    print("\n===================================")
-    print("       END OF TRIP CONTROL")
-    print("===================================\n")
+    print("\n===================================", flush=True)
+    print("       END OF TRIP CONTROL",          flush=True)
+    print("===================================\n", flush=True)
 
-    def ask_yn_fin(question):
+    def ask_yn_eot(question):
         while True:
             ans = input(f"  {question} (Y/N) : ").strip().upper()
             if ans in ("Y", "N"):
                 return ans == "Y"
-            print("  Please answer Y or N.")
+            print("  Please answer Y or N.", flush=True)
 
-    hull_clean      = ask_yn_fin("Hull clean")
-    engine_bilge_ok = ask_yn_fin("Engine bilge dry and clean")
-    fore_bilge_ok   = ask_yn_fin("Fore bilge dry and clean")
+    hull_clean      = ask_yn_eot("Hull clean")
+    engine_bilge_ok = ask_yn_eot("Engine bilge dry and clean")
+    nav_bilge_ok    = ask_yn_eot("Nav bilge dry and clean")
+    fore_bilge_ok   = ask_yn_eot("Fore bilge dry and clean")
 
     def yn(b): return "OK" if b else "NOK"
 
     write_event(
         f"END OF TRIP CONTROL | HULL={yn(hull_clean)} "
         f"| ENGINE BILGE={yn(engine_bilge_ok)} "
+        f"| NAV BILGE={yn(nav_bilge_ok)} "
         f"| FORE BILGE={yn(fore_bilge_ok)}"
     )
 
@@ -140,16 +148,17 @@ def _ask_arrival_and_close(default_port=""):
             f.write(f"TOTAL DISTANCE  : {distance_traveled_nm:.1f} nm\n")
             f.write(f"HULL CLEAN      : {yn(hull_clean)}\n")
             f.write(f"ENGINE BILGE    : {yn(engine_bilge_ok)}\n")
+            f.write(f"NAV BILGE (EOT) : {yn(nav_bilge_ok)}\n")
             f.write(f"FORE BILGE      : {yn(fore_bilge_ok)}\n")
             f.write("====================================\n")
 
-        print("Compressing log…")
+        print("\nCompressing log...", flush=True)
         compress_file(event_log_file)
-        print("File compressed.")
+        print("File compressed.", flush=True)
     else:
-        print("(no log file to compress)")
+        print("(no log file to compress)", flush=True)
 
-    print("Goodbye.")
+    print("Goodbye.", flush=True)
     os._exit(0)
 
 
@@ -364,7 +373,7 @@ def parse_engine_hours_hhmmss(prompt_text):
             s  = int(m.group(3))
             if mn < 60 and s < 60:
                 return h + mn / 60.0 + s / 3600.0
-            print("  Minutes et secondes doivent être < 60. Essayez à nouveau.")
+            print("  Minutes and seconds must be < 60. Please try again.")
         else:
             # Fallback : float
             try:
@@ -438,7 +447,7 @@ def engine_on_sequence():
         print("  Please answer Y or N.")
     cooling_ok = (ans == "Y")
     motor_state = "ON"
-    # FIX : write_event enregistre ENGINE ON → démarre le compteur moteur
+    # Write ENGINE ON event → starts the engine timer
     write_event(f"ENGINE ON | COOLING WATER {'OK' if cooling_ok else 'NOK'}")
 
 # =========================================================
@@ -465,14 +474,14 @@ def filtration_off_sequence():
 
     while True:
         try:
-            volume = float(input("  Volume Lamprey filtré (mL) : ").strip())
+            volume = float(input("  Lamprey filtered volume (mL) : ").strip())
             if volume < 0: raise ValueError("must be >= 0")
             break
         except ValueError as e:
             print(f"  Invalid value ({e}), try again.")
 
     while True:
-        ans = input("  Saturation ? (Y/N) : ").strip().upper()
+        ans = input("  Saturation? (Y/N) : ").strip().upper()
         if ans in ("Y", "N"):
             saturated = (ans == "Y")
             break
@@ -569,6 +578,7 @@ def navigation_setup():
     print("===================================\n")
 
     bilges_dry   = ask_yn("Bilges dry")
+    nav_bilge_ok = ask_yn("Nav bilge dry and clean")
     portholes_ok = ask_yn("Portholes closed")
     seacocks_ok  = ask_yn("Sea cocks closed")
     boat_stowed  = ask_yn("Boat stowed and secured")
@@ -582,8 +592,8 @@ def navigation_setup():
     print("\n===================================\n")
     engine_start_now = input("Engine ON now? (Y/N) : ").strip().upper() == "Y"
     if engine_start_now:
-        # L'appel à engine_on_sequence() est différé après création du fichier log
-        # On stocke juste le flag ici
+        # engine_on_sequence() is deferred until after the log file is created
+        # Just store the flag here
         pass
 
     return {
@@ -606,6 +616,7 @@ def navigation_setup():
         "belt_ok"           : belt_ok,
         "bilge_ok_front"    : bilge_ok_front,
         "bilges_dry"        : bilges_dry,
+        "nav_bilge_ok"      : nav_bilge_ok,
         "portholes_ok"      : portholes_ok,
         "seacocks_ok"       : seacocks_ok,
         "boat_stowed"       : boat_stowed,
@@ -650,8 +661,8 @@ def terminal_event_listener():
         print(" inline on/off")
         print(" filtration on   (asks filter size)")
         print(" filtration off  (asks size + volume + saturation)")
-        print(" turbidity       (triplicat de mesures)")
-        print(" secchi          (profondeur disque Secchi)")
+        print(" turbidity       (triplicate measurements)")
+        print(" secchi          (Secchi disk depth)")
         print(" bucket          (instant event)")
         print(" ctd keel on/off")
         print(" ctd profile on/off")
@@ -835,13 +846,14 @@ def main():
     global latest_fix, event_log_file
     global last_position
     global distance_traveled_nm, initial_distance_nm
-    global sea_state, ctd_keel_state
+    global sea_state, ctd_keel_state, _destination_port
 
     connect_wifi()
     setup = navigation_setup()
 
-    sea_state      = setup["sea"]
-    ctd_keel_state = setup["ctd_keel"]
+    sea_state         = setup["sea"]
+    ctd_keel_state    = setup["ctd_keel"]
+    _destination_port = setup["destination"]  # used as default arrival port on shutdown
 
     threading.Thread(target=terminal_event_listener, daemon=True).start()
 
@@ -925,6 +937,7 @@ def main():
 
         f.write("\n--- BOAT CONTROL CHECK ---\n")
         f.write(f"BILGES DRY       : {yn(setup['bilges_dry'])}\n")
+        f.write(f"NAV BILGE        : {yn(setup['nav_bilge_ok'])}\n")
         f.write(f"PORTHOLES CLOSED : {yn(setup['portholes_ok'])}\n")
         f.write(f"SEA COCKS CLOSED : {yn(setup['seacocks_ok'])}\n")
         f.write(f"BOAT STOWED      : {yn(setup['boat_stowed'])}\n")
@@ -937,11 +950,11 @@ def main():
 
         f.write("\n====================================\n\n")
 
-    # --- Events initiaux après création du fichier log ---
+    # --- Initial events after log file creation ---
     if setup["ctd_keel"] == "ON":
         write_event("CTD KEEL ON")
 
-    # FIX: engine on au setup → écrit l'event ENGINE ON maintenant que le fichier existe
+    # engine_on_sequence() is called here so the ENGINE ON event is written to the log file
     if setup["engine_start_now"]:
         engine_on_sequence()
 
@@ -983,7 +996,7 @@ def main():
                     now = time.time()
                     if now - last_display > 30:
                         if latest_fix:
-                            # FIX: heure UTC système (pas l'heure GPS qui peut être décalée)
+                            # UTC system time (not GPS time which may drift)
                             ts_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                             ls  = decimal_to_deg_min(latest_fix["lat"], is_lon=False)
                             lo  = decimal_to_deg_min(latest_fix["lon"], is_lon=True)
@@ -1007,7 +1020,7 @@ def main():
                 time.sleep(0.1)
 
     if not _shutdown_requested:
-        _ask_arrival_and_close()
+        _ask_arrival_and_close(_destination_port)
 
 
 if __name__ == "__main__":
