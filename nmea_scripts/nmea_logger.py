@@ -50,18 +50,14 @@ spi_state      = "OFF"
 sea_state = "0"
 
 hypernet_state      = "OFF"
-hypernet_station_id = ""     # set when hypernet on, cleared on hypernet off
 net_state           = "OFF"
 inline_state        = "OFF"
 filtration_state    = "OFF"
-bio_state           = "OFF"
-bio_station_id      = ""     # set when bio on, cleared on bio off
 ctd_keel_state      = "OFF"
 ctd_profile_state   = "OFF"
 ctd_intercomp_state = "OFF"
 
 _shutdown_requested = False
-_destination_port   = ""   # filled after setup, used in shutdown
 
 # =========================================================
 # DISPLAY BUFFER
@@ -90,55 +86,48 @@ def _buffered_print(line):
 def _sigint_handler(signum, frame):
     global _shutdown_requested
     if _shutdown_requested:
-        print("\n(shutdown already in progress...)")
+        print("\n(shutdown already in progress…)")
         return
     _shutdown_requested = True
-    print("\n\n⚓  SHUTDOWN REQUESTED", flush=True)
-    _ask_arrival_and_close(_destination_port)
+    print("\n\n⚓  SHUTDOWN REQUESTED")
+    _ask_arrival_and_close()
 
 
 def _ask_arrival_and_close(default_port=""):
     global event_log_file, distance_traveled_nm
 
-    print(flush=True)
-    # Arrival port: 'ok' → use the destination entered at setup
-    raw_port = input(
-        f"Arrival port [Enter 'ok' to use '{default_port}'] : " if default_port
-        else "Arrival port : "
-    ).strip()
-    if raw_port.lower() == "ok" and default_port:
-        arrival = default_port
-    elif raw_port:
-        arrival = raw_port
-    else:
+    try:
+        prompt = f"Arrival port [{default_port}] : " if default_port else "Arrival port : "
+        arrival = input(prompt).strip()
+        if not arrival:
+            arrival = default_port
+    except (EOFError, KeyboardInterrupt):
         arrival = default_port
 
     if arrival:
         write_event(f"ARRIVAL : {arrival}")
     write_event(f"TOTAL TRAVELED : {distance_traveled_nm:.1f} nm")
 
-    print("\n===================================", flush=True)
-    print("       END OF TRIP CONTROL",          flush=True)
-    print("===================================\n", flush=True)
+    print("\n===================================")
+    print("       END OF TRIP CONTROL")
+    print("===================================\n")
 
-    def ask_yn_eot(question):
+    def ask_yn_fin(question):
         while True:
             ans = input(f"  {question} (Y/N) : ").strip().upper()
             if ans in ("Y", "N"):
                 return ans == "Y"
-            print("  Please answer Y or N.", flush=True)
+            print("  Please answer Y or N.")
 
-    hull_clean      = ask_yn_eot("Hull clean")
-    engine_bilge_ok = ask_yn_eot("Engine bilge dry and clean")
-    nav_bilge_ok    = ask_yn_eot("Nav bilge dry and clean")
-    fore_bilge_ok   = ask_yn_eot("Fore bilge dry and clean")
+    hull_clean      = ask_yn_fin("Hull clean")
+    engine_bilge_ok = ask_yn_fin("Engine bilge dry and clean")
+    fore_bilge_ok   = ask_yn_fin("Fore bilge dry and clean")
 
     def yn(b): return "OK" if b else "NOK"
 
     write_event(
         f"END OF TRIP CONTROL | HULL={yn(hull_clean)} "
         f"| ENGINE BILGE={yn(engine_bilge_ok)} "
-        f"| NAV BILGE={yn(nav_bilge_ok)} "
         f"| FORE BILGE={yn(fore_bilge_ok)}"
     )
 
@@ -151,17 +140,16 @@ def _ask_arrival_and_close(default_port=""):
             f.write(f"TOTAL DISTANCE  : {distance_traveled_nm:.1f} nm\n")
             f.write(f"HULL CLEAN      : {yn(hull_clean)}\n")
             f.write(f"ENGINE BILGE    : {yn(engine_bilge_ok)}\n")
-            f.write(f"NAV BILGE (EOT) : {yn(nav_bilge_ok)}\n")
             f.write(f"FORE BILGE      : {yn(fore_bilge_ok)}\n")
             f.write("====================================\n")
 
-        print("\nCompressing log...", flush=True)
+        print("Compressing log…")
         compress_file(event_log_file)
-        print("File compressed.", flush=True)
+        print("File compressed.")
     else:
-        print("(no log file to compress)", flush=True)
+        print("(no log file to compress)")
 
-    print("Goodbye.", flush=True)
+    print("Goodbye.")
     os._exit(0)
 
 
@@ -376,7 +364,7 @@ def parse_engine_hours_hhmmss(prompt_text):
             s  = int(m.group(3))
             if mn < 60 and s < 60:
                 return h + mn / 60.0 + s / 3600.0
-            print("  Minutes and seconds must be < 60. Please try again.")
+            print("  Minutes et secondes doivent être < 60. Essayez à nouveau.")
         else:
             # Fallback : float
             try:
@@ -450,7 +438,7 @@ def engine_on_sequence():
         print("  Please answer Y or N.")
     cooling_ok = (ans == "Y")
     motor_state = "ON"
-    # Write ENGINE ON event → starts the engine timer
+    # FIX : write_event enregistre ENGINE ON → démarre le compteur moteur
     write_event(f"ENGINE ON | COOLING WATER {'OK' if cooling_ok else 'NOK'}")
 
 # =========================================================
@@ -459,18 +447,7 @@ def engine_on_sequence():
 
 FILTRATION_SIZES = ["micro", "nano", "pico"]
 
-def ask_station_id(prefix):
-    """
-    Ask for a 3-digit station number and return the full station ID.
-    Example: prefix='Vela_Lab_hyp_st', input '005' → 'Vela_Lab_hyp_st(005)'
-    """
-    while True:
-        raw = input(f"  Station ID — {prefix}_XXX, enter 3 digits : ").strip()
-        if re.match(r"^\d{3}$", raw):
-            return f"{prefix}_{raw}"
-        print("  Please enter exactly 3 digits (e.g. 005).")
-
-
+def ask_filtration_size(prompt="  Filter size"):
     while True:
         ans = input(f"{prompt} (micro/nano/pico) : ").strip().lower()
         if ans in FILTRATION_SIZES:
@@ -488,14 +465,14 @@ def filtration_off_sequence():
 
     while True:
         try:
-            volume = float(input("  Lamprey filtered volume (mL) : ").strip())
+            volume = float(input("  Volume Lamprey filtré (mL) : ").strip())
             if volume < 0: raise ValueError("must be >= 0")
             break
         except ValueError as e:
             print(f"  Invalid value ({e}), try again.")
 
     while True:
-        ans = input("  Saturation? (Y/N) : ").strip().upper()
+        ans = input("  Saturation ? (Y/N) : ").strip().upper()
         if ans in ("Y", "N"):
             saturated = (ans == "Y")
             break
@@ -592,7 +569,6 @@ def navigation_setup():
     print("===================================\n")
 
     bilges_dry   = ask_yn("Bilges dry")
-    nav_bilge_ok = ask_yn("Nav bilge dry and clean")
     portholes_ok = ask_yn("Portholes closed")
     seacocks_ok  = ask_yn("Sea cocks closed")
     boat_stowed  = ask_yn("Boat stowed and secured")
@@ -606,8 +582,8 @@ def navigation_setup():
     print("\n===================================\n")
     engine_start_now = input("Engine ON now? (Y/N) : ").strip().upper() == "Y"
     if engine_start_now:
-        # engine_on_sequence() is deferred until after the log file is created
-        # Just store the flag here
+        # L'appel à engine_on_sequence() est différé après création du fichier log
+        # On stocke juste le flag ici
         pass
 
     return {
@@ -630,7 +606,6 @@ def navigation_setup():
         "belt_ok"           : belt_ok,
         "bilge_ok_front"    : bilge_ok_front,
         "bilges_dry"        : bilges_dry,
-        "nav_bilge_ok"      : nav_bilge_ok,
         "portholes_ok"      : portholes_ok,
         "seacocks_ok"       : seacocks_ok,
         "boat_stowed"       : boat_stowed,
@@ -648,9 +623,7 @@ def terminal_event_listener():
     global main_state, main_reef
     global jib_state, staysail_state, stormjib_state, spi_state
     global sea_state
-    global hypernet_state, hypernet_station_id
-    global net_state, inline_state, filtration_state
-    global bio_state, bio_station_id
+    global hypernet_state, net_state, inline_state, filtration_state
     global ctd_keel_state, ctd_profile_state, ctd_intercomp_state
 
     def print_help():
@@ -671,20 +644,15 @@ def terminal_event_listener():
         print(" n: text         (navigation comment)")
         print(" s: text         (science comment)")
         print(" state           (show current state)")
-        print("\n--- Science — HYPERNET station ---")
-        print(" hypernet on     (asks station ID → unlocks turbidity, secchi)")
-        print(" hypernet off")
-        print(" turbidity       (triplicate — requires hypernet on)")
-        print(" secchi          (Secchi disk depth — requires hypernet on)")
-        print("\n--- Science — BIO station ---")
-        print(" bio on          (asks station ID → unlocks filtration, bucket, net)")
-        print(" bio off")
-        print(" filtration on   (asks filter size — requires bio on)")
-        print(" filtration off  (asks size + volume + saturation)")
-        print(" bucket          (instant event — requires bio on)")
-        print(" net on/off      (requires bio on)")
+        print("\n--- Science ---")
+        print(" hypernet on/off")
+        print(" net on/off")
         print(" inline on/off")
-        print("\n--- Science — CTD ---")
+        print(" filtration on   (asks filter size)")
+        print(" filtration off  (asks size + volume + saturation)")
+        print(" turbidity       (triplicat de mesures)")
+        print(" secchi          (profondeur disque Secchi)")
+        print(" bucket          (instant event)")
         print(" ctd keel on/off")
         print(" ctd profile on/off")
         print(" ctd intercomp on/off")
@@ -708,16 +676,11 @@ def terminal_event_listener():
         print(f" Storm jib : {stormjib_state}")
         print(f" Spi       : {spi_state}")
         print(f" Sea state : {sea_state}")
-        print("--- Science — HYPERNET ---")
-        hyp_id = f"  [{hypernet_station_id}]" if hypernet_station_id else ""
-        print(f" Hypernet     : {hypernet_state}{hyp_id}")
-        print(f" Inline       : {inline_state}")
-        print("--- Science — BIO ---")
-        bio_id = f"  [{bio_station_id}]" if bio_station_id else ""
-        print(f" Bio          : {bio_state}{bio_id}")
+        print("--- Science ---")
+        print(f" Hypernet     : {hypernet_state}")
         print(f" Net          : {net_state}")
+        print(f" Inline       : {inline_state}")
         print(f" Filtration   : {filtration_state}")
-        print("--- Science — CTD ---")
         print(f" CTD keel     : {ctd_keel_state}")
         print(f" CTD profile  : {ctd_profile_state}")
         print(f" CTD intercomp: {ctd_intercomp_state}")
@@ -784,120 +747,59 @@ def terminal_event_listener():
                 else:
                     print("  Usage : s: your comment")
 
-            # ---- Science — HYPERNET station ----
-            elif cmd_lower == "hypernet on":
-                if hypernet_state == "ON":
-                    print(f"  Hypernet already ON (station {hypernet_station_id}). Do 'hypernet off' first.")
-                else:
-                    station_id = ask_station_id("Vela_Lab_hyp_st")
-                    hypernet_station_id = station_id
-                    hypernet_state = "ON"
-                    write_event(f"HYPERNET ON | STATION {station_id}")
-
-            elif cmd_lower == "hypernet off":
-                if hypernet_state == "OFF":
-                    print("  Hypernet is already OFF.")
-                else:
-                    write_event(f"HYPERNET OFF | STATION {hypernet_station_id}")
-                    hypernet_state = "OFF"
-                    hypernet_station_id = ""
-
-            elif cmd_lower == "turbidity":
-                if hypernet_state != "ON":
-                    print("  Cannot run turbidity: hypernet station not active. Run 'hypernet on' first.")
-                else:
-                    vals = []
-                    for i in range(1, 4):
-                        while True:
-                            try:
-                                v = float(input(f"  Turbidity {i} : ").strip())
-                                vals.append(v)
-                                break
-                            except ValueError:
-                                print("  Please enter a numeric value.")
-                    write_event(
-                        f"TURBIDITY | STATION {hypernet_station_id} "
-                        f"| T1={vals[0]:.4f} | T2={vals[1]:.4f} | T3={vals[2]:.4f}"
-                    )
-
-            elif cmd_lower == "secchi":
-                if hypernet_state != "ON":
-                    print("  Cannot run secchi: hypernet station not active. Run 'hypernet on' first.")
-                else:
-                    while True:
-                        try:
-                            depth = float(input("  Secchi disk depth (m) : ").strip())
-                            if depth < 0: raise ValueError("must be >= 0")
-                            break
-                        except ValueError as e:
-                            print(f"  Invalid value ({e}), try again.")
-                    write_event(f"SECCHI | STATION {hypernet_station_id} | DEPTH {depth:.2f} m")
-
-            # ---- Science — BIO station ----
-            elif cmd_lower == "bio on":
-                if bio_state == "ON":
-                    print(f"  Bio already ON (station {bio_station_id}). Do 'bio off' first.")
-                else:
-                    station_id = ask_station_id("Vela_Lab_bio_st")
-                    bio_station_id = station_id
-                    bio_state = "ON"
-                    write_event(f"BIO ON | STATION {station_id}")
-
-            elif cmd_lower == "bio off":
-                if bio_state == "OFF":
-                    print("  Bio is already OFF.")
-                else:
-                    write_event(f"BIO OFF | STATION {bio_station_id}")
-                    bio_state = "OFF"
-                    bio_station_id = ""
-
+            # ---- Science ----
             elif cmd_lower == "filtration on":
-                if bio_state != "ON":
-                    print("  Cannot start filtration: bio station not active. Run 'bio on' first.")
-                else:
-                    size = filtration_on_sequence()
-                    filtration_state = "ON"
-                    write_event(f"FILTRATION ON | STATION {bio_station_id} | SIZE {size.upper()}")
+                size = filtration_on_sequence()
+                filtration_state = "ON"
+                write_event(f"FILTRATION ON | SIZE {size.upper()}")
 
             elif cmd_lower == "filtration off":
-                if filtration_state != "ON":
-                    print("  Filtration is not currently ON.")
-                else:
-                    size, volume, saturated = filtration_off_sequence()
-                    filtration_state = "OFF"
-                    sat_str = "YES" if saturated else "NO"
-                    write_event(
-                        f"FILTRATION OFF | STATION {bio_station_id} | SIZE {size.upper()} "
-                        f"| VOLUME {volume:.1f} mL | SATURATION {sat_str}"
-                    )
+                size, volume, saturated = filtration_off_sequence()
+                filtration_state = "OFF"
+                sat_str = "YES" if saturated else "NO"
+                write_event(
+                    f"FILTRATION OFF | SIZE {size.upper()} "
+                    f"| VOLUME {volume:.1f} mL | SATURATION {sat_str}"
+                )
 
-            elif cmd_lower == "bucket":
-                if bio_state != "ON":
-                    print("  Cannot log bucket: bio station not active. Run 'bio on' first.")
-                else:
-                    write_event(f"BUCKET | STATION {bio_station_id}")
+            elif cmd_lower == "turbidity":
+                vals = []
+                for i in range(1, 4):
+                    while True:
+                        try:
+                            v = float(input(f"  Turbidity {i} : ").strip())
+                            vals.append(v)
+                            break
+                        except ValueError:
+                            print("  Please enter a numeric value.")
+                write_event(
+                    f"TURBIDITY | "
+                    f"T1={vals[0]:.4f} | T2={vals[1]:.4f} | T3={vals[2]:.4f}"
+                )
 
-            elif cmd_lower == "net on":
-                if bio_state != "ON":
-                    print("  Cannot start net: bio station not active. Run 'bio on' first.")
-                else:
-                    net_state = "ON"
-                    write_event(f"NET ON | STATION {bio_station_id}")
+            elif cmd_lower == "secchi":
+                while True:
+                    try:
+                        depth = float(input("  Profondeur du disque Secchi (m) : ").strip())
+                        if depth < 0: raise ValueError("must be >= 0")
+                        break
+                    except ValueError as e:
+                        print(f"  Invalid value ({e}), try again.")
+                write_event(f"SECCHI | DEPTH {depth:.2f} m")
 
-            elif cmd_lower == "net off":
-                net_state = "OFF"
-                write_event(f"NET OFF | STATION {bio_station_id}")
-
-            elif cmd_lower == "inline on":          inline_state = "ON";      write_event("INLINE ON")
-            elif cmd_lower == "inline off":         inline_state = "OFF";     write_event("INLINE OFF")
-
-            # ---- Science — CTD ----
             elif cmd_lower == "ctd keel on":        ctd_keel_state = "ON";        write_event("CTD KEEL ON")
             elif cmd_lower == "ctd keel off":       ctd_keel_state = "OFF";       write_event("CTD KEEL OFF")
             elif cmd_lower == "ctd profile on":     ctd_profile_state = "ON";     write_event("CTD PROFILE ON")
             elif cmd_lower == "ctd profile off":    ctd_profile_state = "OFF";    write_event("CTD PROFILE OFF")
             elif cmd_lower == "ctd intercomp on":   ctd_intercomp_state = "ON";   write_event("CTD INTERCOMP ON")
             elif cmd_lower == "ctd intercomp off":  ctd_intercomp_state = "OFF";  write_event("CTD INTERCOMP OFF")
+
+            elif cmd_lower == "hypernet on":        hypernet_state = "ON";    write_event("HYPERNET ON")
+            elif cmd_lower == "hypernet off":       hypernet_state = "OFF";   write_event("HYPERNET OFF")
+            elif cmd_lower == "net on":             net_state = "ON";         write_event("NET ON")
+            elif cmd_lower == "net off":            net_state = "OFF";        write_event("NET OFF")
+            elif cmd_lower == "inline on":          inline_state = "ON";      write_event("INLINE ON")
+            elif cmd_lower == "inline off":         inline_state = "OFF";     write_event("INLINE OFF")
 
             elif cmd_lower == "bucket":
                 write_event("BUCKET")
@@ -933,14 +835,13 @@ def main():
     global latest_fix, event_log_file
     global last_position
     global distance_traveled_nm, initial_distance_nm
-    global sea_state, ctd_keel_state, _destination_port
+    global sea_state, ctd_keel_state
 
     connect_wifi()
     setup = navigation_setup()
 
-    sea_state         = setup["sea"]
-    ctd_keel_state    = setup["ctd_keel"]
-    _destination_port = setup["destination"]  # used as default arrival port on shutdown
+    sea_state      = setup["sea"]
+    ctd_keel_state = setup["ctd_keel"]
 
     threading.Thread(target=terminal_event_listener, daemon=True).start()
 
@@ -1024,7 +925,6 @@ def main():
 
         f.write("\n--- BOAT CONTROL CHECK ---\n")
         f.write(f"BILGES DRY       : {yn(setup['bilges_dry'])}\n")
-        f.write(f"NAV BILGE        : {yn(setup['nav_bilge_ok'])}\n")
         f.write(f"PORTHOLES CLOSED : {yn(setup['portholes_ok'])}\n")
         f.write(f"SEA COCKS CLOSED : {yn(setup['seacocks_ok'])}\n")
         f.write(f"BOAT STOWED      : {yn(setup['boat_stowed'])}\n")
@@ -1037,11 +937,11 @@ def main():
 
         f.write("\n====================================\n\n")
 
-    # --- Initial events after log file creation ---
+    # --- Events initiaux après création du fichier log ---
     if setup["ctd_keel"] == "ON":
         write_event("CTD KEEL ON")
 
-    # engine_on_sequence() is called here so the ENGINE ON event is written to the log file
+    # FIX: engine on au setup → écrit l'event ENGINE ON maintenant que le fichier existe
     if setup["engine_start_now"]:
         engine_on_sequence()
 
@@ -1083,7 +983,7 @@ def main():
                     now = time.time()
                     if now - last_display > 30:
                         if latest_fix:
-                            # UTC system time (not GPS time which may drift)
+                            # FIX: heure UTC système (pas l'heure GPS qui peut être décalée)
                             ts_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                             ls  = decimal_to_deg_min(latest_fix["lat"], is_lon=False)
                             lo  = decimal_to_deg_min(latest_fix["lon"], is_lon=True)
@@ -1107,7 +1007,7 @@ def main():
                 time.sleep(0.1)
 
     if not _shutdown_requested:
-        _ask_arrival_and_close(_destination_port)
+        _ask_arrival_and_close()
 
 
 if __name__ == "__main__":

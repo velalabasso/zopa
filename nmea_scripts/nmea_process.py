@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
 
-import re
-import copy
-import datetime
-import shutil
 import pandas as pd
 import numpy as np
 import os
@@ -24,9 +20,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-
-import openpyxl
-from openpyxl import load_workbook
 
 # =========================================================
 # LOCAL MAP DATA
@@ -60,11 +53,6 @@ if not HAS_MAPDATA:
 base_folder = "/home/zopa/science/nmea_logs"
 VESSEL_NAME = "ZOPA"
 MMSI        = "227909880"
-
-# Path to the Bio sampling template — place in ~/science/ or update here
-BIO_TEMPLATE_PATH = os.path.expanduser(
-    "~/science/Bio_sampling_and_analysis_Vela_Lab_v4.xlsx"
-)
 
 # =========================================================
 # UTILS
@@ -290,8 +278,8 @@ def parse_nmea(file_path):
     cur_sea="0"; cur_hypernet="OFF"; cur_net="OFF"; cur_inline="OFF"
     cur_ctd_keel="OFF"; cur_ctd_profile="OFF"; cur_ctd_intercomp="OFF"
 
-    engine_on_since    = None
-    engine_minutes_cum = 0.0
+    engine_on_since       = None
+    engine_minutes_cum    = 0.0
 
     open_func = gzip.open if file_path.endswith(".gz") else open
 
@@ -314,6 +302,7 @@ def parse_nmea(file_path):
                 meta["engine_bilge_end"] = raw_val.strip()
 
         if line.startswith("# EVENT"):
+            import re
             m_ts = re.match(r"# EVENT \[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\] : (.*)", line)
             if m_ts:
                 try:
@@ -407,8 +396,10 @@ def parse_nmea(file_path):
             continue
 
         parts = line.split(",")
+
         if parts and "*" in parts[-1]:
             parts[-1] = parts[-1].split("*")[0]
+
         msg = parts[0]
 
         if msg == "$GPRMC":
@@ -496,6 +487,7 @@ def parse_nmea(file_path):
                 np.isnan(np.degrees(awa)) | np.isnan(np.degrees(hdg)))
         twa[bad] = np.nan
         df["TWA"] = twa
+
         a = twa % 360
         a = np.where(a > 180, 360 - a, a)
         df["allure"] = np.select(
@@ -516,6 +508,7 @@ def parse_nmea(file_path):
             _rts  = np.array([pd.Timestamp(t).value for t, _, __ in _recs_with_pos])
             _rlat = np.array([la for _, la, __ in _recs_with_pos], dtype=float)
             _rlon = np.array([lo for _, __, lo in _recs_with_pos], dtype=float)
+
             retro_mask = df_events["is_retrodate"].fillna(False)
             for idx in df_events.index[retro_mask]:
                 ts = df_events.at[idx, "timestamp"]
@@ -583,9 +576,9 @@ def resample_every_0_1nm(df, df_events=None):
     for col in SCIENCE_COLS: out[col] = "OFF"
 
     if science_events:
-        ev_ts_ns  = np.array([t.value for t, _ in science_events])
+        ev_ts_ns = np.array([t.value for t, _ in science_events])
         ev_states = [s for _, s in science_events]
-        ts_ns     = out["timestamp"].values.astype("int64")
+        ts_ns = out["timestamp"].values.astype("int64")
         for idx, t in enumerate(ts_ns):
             pos = np.searchsorted(ev_ts_ns, t, side="right") - 1
             if pos >= 0:
@@ -644,8 +637,10 @@ def build_track_map(df, meta):
 
     lat_c  = (lat_min + lat_max) / 2.0
     merc   = 1.0 / math.cos(math.radians(lat_c))
+
     span_data_lon = lon_max - lon_min
     span_data_lat = lat_max - lat_min
+
     fig_ratio  = FIG_W_IN / FIG_H_IN
     data_ratio = span_data_lon / (span_data_lat * merc)
 
@@ -661,9 +656,12 @@ def build_track_map(df, meta):
     ax.set_facecolor("#d0e8f5")
 
     bathy_layers = [
-        ("bathy_5000", "#6a9fb5", 1.0), ("bathy_4000", "#7aaec4", 0.9),
-        ("bathy_3000", "#8abdd3", 0.85),("bathy_2000", "#9acce0", 0.8),
-        ("bathy_1000", "#aad8e8", 0.75),("bathy_500",  "#b8e0ee", 0.7),
+        ("bathy_5000", "#6a9fb5", 1.0),
+        ("bathy_4000", "#7aaec4", 0.9),
+        ("bathy_3000", "#8abdd3", 0.85),
+        ("bathy_2000", "#9acce0", 0.8),
+        ("bathy_1000", "#aad8e8", 0.75),
+        ("bathy_500",  "#b8e0ee", 0.7),
         ("bathy_200",  "#c8e8f4", 0.65),
     ]
     for name, color, alpha in bathy_layers:
@@ -674,18 +672,26 @@ def build_track_map(df, meta):
 
     if "land" in _MAPDATA:
         arr = _clip(_MAPDATA["land"], lon_min, lon_max, lat_min, lat_max)
-        if len(arr): ax.fill(arr[:,0], arr[:,1], color="#e8e0cc", linewidth=0, zorder=2)
+        if len(arr):
+            ax.fill(arr[:,0], arr[:,1], color="#e8e0cc", linewidth=0, zorder=2)
+
     if "lakes" in _MAPDATA:
         arr = _clip(_MAPDATA["lakes"], lon_min, lon_max, lat_min, lat_max)
-        if len(arr): ax.fill(arr[:,0], arr[:,1], color="#d0e8f5", linewidth=0, zorder=3)
+        if len(arr):
+            ax.fill(arr[:,0], arr[:,1], color="#d0e8f5", linewidth=0, zorder=3)
+
     if "rivers" in _MAPDATA:
         arr = _clip(_MAPDATA["rivers"], lon_min, lon_max, lat_min, lat_max)
-        if len(arr): ax.plot(arr[:,0], arr[:,1], color="#7ab4d4", linewidth=0.4,
-                             solid_capstyle="round", zorder=4)
+        if len(arr):
+            ax.plot(arr[:,0], arr[:,1], color="#7ab4d4", linewidth=0.4,
+                    solid_capstyle="round", zorder=4)
+
     if "countries" in _MAPDATA:
         arr = _clip(_MAPDATA["countries"], lon_min, lon_max, lat_min, lat_max)
-        if len(arr): ax.plot(arr[:,0], arr[:,1], color="#999999", linewidth=0.35,
-                             linestyle=(0,(4,3)), zorder=5)
+        if len(arr):
+            ax.plot(arr[:,0], arr[:,1], color="#999999", linewidth=0.35,
+                    linestyle=(0, (4, 3)), zorder=5)
+
     if "coastline" in _MAPDATA:
         arr = _clip(_MAPDATA["coastline"], lon_min, lon_max, lat_min, lat_max)
         if len(arr):
@@ -694,37 +700,48 @@ def build_track_map(df, meta):
             ax.plot(arr[:,0], arr[:,1], color="#333333", linewidth=0.8,
                     solid_capstyle="round", zorder=7)
 
-    ax.plot(lons_plot, lats_plot, color="white", linewidth=3.5, solid_capstyle="round", zorder=8)
-    ax.plot(lons_plot, lats_plot, color="#c0392b", linewidth=1.8, solid_capstyle="round", zorder=9)
-    ax.plot(lons[0],  lats[0],  "o", color="white",   markersize=10, zorder=10)
-    ax.plot(lons[0],  lats[0],  "o", color="#27ae60", markersize=7,  zorder=11)
-    ax.plot(lons[-1], lats[-1], "s", color="white",   markersize=10, zorder=10)
-    ax.plot(lons[-1], lats[-1], "s", color="#c0392b", markersize=7,  zorder=11)
-    ax.annotate(f" {dep_label}", (lons[0], lats[0]), fontsize=6.5, color="#1a7a40",
-        fontweight="bold", va="bottom", xytext=(4,4), textcoords="offset points", zorder=12,
+    ax.plot(lons_plot, lats_plot, color="white", linewidth=3.5,
+            solid_capstyle="round", zorder=8)
+    ax.plot(lons_plot, lats_plot, color="#c0392b", linewidth=1.8,
+            solid_capstyle="round", zorder=9)
+
+    ax.plot(lons[0], lats[0], "o", color="white", markersize=10, zorder=10)
+    ax.plot(lons[0], lats[0], "o", color="#27ae60", markersize=7, zorder=11)
+    ax.plot(lons[-1], lats[-1], "s", color="white", markersize=10, zorder=10)
+    ax.plot(lons[-1], lats[-1], "s", color="#c0392b", markersize=7, zorder=11)
+
+    ax.annotate(f" {dep_label}", (lons[0], lats[0]),
+        fontsize=6.5, color="#1a7a40", fontweight="bold",
+        va="bottom", xytext=(4, 4), textcoords="offset points", zorder=12,
         bbox=dict(boxstyle="round,pad=0.15", facecolor="white", edgecolor="none", alpha=0.7))
-    ax.annotate(f" {arr_label}", (lons[-1], lats[-1]), fontsize=6.5, color="#922b21",
-        fontweight="bold", va="bottom", xytext=(4,4), textcoords="offset points", zorder=12,
+    ax.annotate(f" {arr_label}", (lons[-1], lats[-1]),
+        fontsize=6.5, color="#922b21", fontweight="bold",
+        va="bottom", xytext=(4, 4), textcoords="offset points", zorder=12,
         bbox=dict(boxstyle="round,pad=0.15", facecolor="white", edgecolor="none", alpha=0.7))
 
-    ax.set_xlim(lon_min, lon_max); ax.set_ylim(lat_min, lat_max); ax.set_aspect("auto")
+    ax.set_xlim(lon_min, lon_max)
+    ax.set_ylim(lat_min, lat_max)
+    ax.set_aspect("auto")
     ax.grid(True, linewidth=0.25, color="#666666", alpha=0.3, linestyle="--", zorder=0)
 
     from matplotlib.ticker import FuncFormatter
     def fmt_lon(x, _):
-        d = int(abs(x)); m = (abs(x)-d)*60
+        d = int(abs(x)); m = (abs(x) - d) * 60
         return f"{d}°{m:04.1f}'{'E' if x>=0 else 'W'}"
     def fmt_lat(y, _):
-        d = int(abs(y)); m = (abs(y)-d)*60
+        d = int(abs(y)); m = (abs(y) - d) * 60
         return f"{d}°{m:04.1f}'{'N' if y>=0 else 'S'}"
+
     ax.xaxis.set_major_formatter(FuncFormatter(fmt_lon))
     ax.yaxis.set_major_formatter(FuncFormatter(fmt_lat))
     ax.tick_params(axis="both", labelsize=5.5, length=3, width=0.5)
+
     for spine in ax.spines.values():
         spine.set_linewidth(0.8); spine.set_edgecolor("#333333")
 
     title = f"Track — {VESSEL_NAME}  |  {dep_label} → {arr_label}"
-    if dist_str: title += f"  |  {dist_str} nm"
+    if dist_str:
+        title += f"  |  {dist_str} nm"
     ax.set_title(title, fontsize=8, fontweight="bold", color="#1a3a5c", pad=6)
 
     legend_handles = [
@@ -740,6 +757,7 @@ def build_track_map(df, meta):
         ]
     ax.legend(handles=legend_handles, loc="lower right", fontsize=5.5,
               framealpha=0.9, edgecolor="#cccccc", fancybox=True, borderpad=0.6)
+
     plt.tight_layout(pad=0.3)
 
     DPI_OUT = 300
@@ -749,15 +767,21 @@ def build_track_map(df, meta):
     buf.seek(0)
 
     from PIL import Image as PILImage
-    pil_img    = PILImage.open(buf)
+    pil_img  = PILImage.open(buf)
     px_w, px_h = pil_img.size
     buf.seek(0)
-    pt_per_px  = 72.0 / DPI_OUT
-    rl_w = px_w * pt_per_px; rl_h = px_h * pt_per_px
-    max_w = 26.5*cm; max_h = 17.0*cm
+
+    pt_per_px = 72.0 / DPI_OUT
+    rl_w = px_w * pt_per_px
+    rl_h = px_h * pt_per_px
+
+    max_w = 26.5 * cm
+    max_h = 17.0 * cm
+
     if rl_w > max_w or rl_h > max_h:
-        scale = min(max_w/rl_w, max_h/rl_h)
+        scale = min(max_w / rl_w, max_h / rl_h)
         rl_w *= scale; rl_h *= scale
+
     buf.seek(0)
     return Image(buf, width=rl_w, height=rl_h)
 
@@ -775,10 +799,10 @@ COLOR_OTHER      = colors.white
 COLOR_EVENT_TEXT = colors.black
 
 def event_color(etype):
-    if etype == "ENGINE":            return COLOR_ENGINE
-    if etype in SCIENCE_EVENT_TYPES: return COLOR_SCIENCE
-    if etype == "NAV_COMMENT":       return COLOR_NAV_CMT
-    if etype == "SCI_COMMENT":       return COLOR_SCI_CMT
+    if etype == "ENGINE":                  return COLOR_ENGINE
+    if etype in SCIENCE_EVENT_TYPES:       return COLOR_SCIENCE
+    if etype == "NAV_COMMENT":             return COLOR_NAV_CMT
+    if etype == "SCI_COMMENT":             return COLOR_SCI_CMT
     return COLOR_NAV
 
 
@@ -860,10 +884,10 @@ def precompute_slot_stats(df2, hourly_slots):
     if df2.empty or not hourly_slots:
         return {}
 
-    ts_ns    = df2["datetime"].values.astype("int64")
-    slots_ns = np.array([pd.Timestamp(s).value for s in hourly_slots])
-    half_min = int(30e9)
-    one_hour = int(3600e9)
+    ts_ns     = df2["datetime"].values.astype("int64")
+    slots_ns  = np.array([pd.Timestamp(s).value for s in hourly_slots])
+    half_min  = int(30e9)
+    one_hour  = int(3600e9)
 
     sog  = df2["SOG_RMC"].values if "SOG_RMC" in df2.columns else np.full(len(df2), np.nan)
     tws  = df2["TWS"].values     if "TWS"     in df2.columns else np.full(len(df2), np.nan)
@@ -872,20 +896,23 @@ def precompute_slot_stats(df2, hourly_slots):
     lats = df2["lat_raw"].values
     lons = df2["lon_raw"].values
 
-    twd_rad = np.radians(twd)
-    sin_twd = np.sin(twd_rad)
-    cos_twd = np.cos(twd_rad)
+    twd_rad  = np.radians(twd)
+    sin_twd  = np.sin(twd_rad)
+    cos_twd  = np.cos(twd_rad)
 
     result = {}
+
     for slot, slot_ns in zip(hourly_slots, slots_ns):
         i_lo = np.searchsorted(ts_ns, slot_ns - half_min, side="left")
         i_hi = np.searchsorted(ts_ns, slot_ns + half_min, side="right")
+
         if i_lo < i_hi:
-            sl    = slice(i_lo, i_hi)
-            sog_m = np.nanmean(sog[sl]); tws_m = np.nanmean(tws[sl]); hdg_m = np.nanmean(hdg[sl])
+            sl   = slice(i_lo, i_hi)
+            sog_m = np.nanmean(sog[sl])
+            tws_m = np.nanmean(tws[sl])
+            hdg_m = np.nanmean(hdg[sl])
             sin_m = np.nanmean(sin_twd[sl]); cos_m = np.nanmean(cos_twd[sl])
-            twd_m = float(np.degrees(np.arctan2(sin_m, cos_m)) % 360) \
-                    if not (np.isnan(sin_m) or np.isnan(cos_m)) else np.nan
+            twd_m = float(np.degrees(np.arctan2(sin_m, cos_m)) % 360) if not (np.isnan(sin_m) or np.isnan(cos_m)) else np.nan
         else:
             sog_m = tws_m = hdg_m = twd_m = np.nan
 
@@ -895,31 +922,41 @@ def precompute_slot_stats(df2, hourly_slots):
 
         i_h0 = np.searchsorted(ts_ns, slot_ns - one_hour, side="left")
         i_h1 = np.searchsorted(ts_ns, slot_ns, side="right")
+
         if i_h0 < i_h1:
             sh      = slice(i_h0, i_h1)
-            tws_moy = np.nanmean(tws[sh]); sog_moy = np.nanmean(sog[sh])
-            sog_mx  = np.nanmax(sog[sh]);  tws_mx  = np.nanmax(tws[sh])
+            tws_moy = np.nanmean(tws[sh])
+            sog_moy = np.nanmean(sog[sh])
+            sog_mx  = np.nanmax(sog[sh])
+            tws_mx  = np.nanmax(tws[sh])
         else:
             tws_moy = sog_moy = sog_mx = tws_mx = np.nan
 
         result[slot] = {
-            "lat":lat_s,"lon":lon_s,"sog_m":sog_m,"tws_m":tws_m,"twd_m":twd_m,"hdg_m":hdg_m,
-            "tws_moy":tws_moy,"sog_moy":sog_moy,"sog_max":sog_mx,"tws_max":tws_mx,
+            "lat":     lat_s,  "lon":     lon_s,
+            "sog_m":   sog_m,  "tws_m":   tws_m,
+            "twd_m":   twd_m,  "hdg_m":   hdg_m,
+            "tws_moy": tws_moy,"sog_moy": sog_moy,
+            "sog_max": sog_mx, "tws_max": tws_mx,
         }
+
     return result
 
 
 def precompute_event_instants(df2, ev_timestamps):
     if df2.empty or not ev_timestamps:
         n = len(ev_timestamps)
-        return pd.DataFrame({"sog_i":[np.nan]*n,"tws_i":[np.nan]*n,
-                              "twd_i":[np.nan]*n,"hdg_i":[np.nan]*n})
+        return pd.DataFrame({
+            "sog_i": [np.nan]*n, "tws_i": [np.nan]*n,
+            "twd_i": [np.nan]*n, "hdg_i": [np.nan]*n,
+        })
 
     ts_ns = df2["datetime"].values.astype("int64")
     sog   = df2["SOG_RMC"].values if "SOG_RMC" in df2.columns else np.full(len(df2), np.nan)
     tws   = df2["TWS"].values     if "TWS"     in df2.columns else np.full(len(df2), np.nan)
     twd   = df2["TWD"].values     if "TWD"     in df2.columns else np.full(len(df2), np.nan)
     hdg   = df2["HDG"].values     if "HDG"     in df2.columns else np.full(len(df2), np.nan)
+
     sog_i = []; tws_i = []; twd_i = []; hdg_i = []
 
     for ts in ev_timestamps:
@@ -938,7 +975,7 @@ def precompute_event_instants(df2, ev_timestamps):
         sog_i.append(sog[best]); tws_i.append(tws[best])
         twd_i.append(twd[best]); hdg_i.append(hdg[best])
 
-    return pd.DataFrame({"sog_i":sog_i,"tws_i":tws_i,"twd_i":twd_i,"hdg_i":hdg_i})
+    return pd.DataFrame({"sog_i":sog_i, "tws_i":tws_i, "twd_i":twd_i, "hdg_i":hdg_i})
 
 
 # =========================================================
@@ -950,305 +987,20 @@ def compute_navigation_elapsed(df2):
         return "-", "-"
     try:
         sailing = df2[df2["SOG_RMC"] > 1.0].dropna(subset=["datetime"])
-        if sailing.empty: return "-", "-"
-        t_start = sailing["datetime"].min(); t_end = df2["datetime"].max()
-        if pd.isnull(t_start) or pd.isnull(t_end) or t_end <= t_start: return "-", "-"
-        elapsed     = t_end - t_start
+        if sailing.empty:
+            return "-", "-"
+        t_start = sailing["datetime"].min()
+        t_end   = df2["datetime"].max()
+        if pd.isnull(t_start) or pd.isnull(t_end) or t_end <= t_start:
+            return "-", "-"
+        elapsed = t_end - t_start
         elapsed_str = elapsed_dhms(elapsed)
-        avg_sog     = sailing["SOG_RMC"].mean()
+        avg_sog = sailing["SOG_RMC"].mean()
         avg_sog_str = f"{avg_sog:.2f} kn" if not np.isnan(avg_sog) else "-"
         return elapsed_str, avg_sog_str
     except Exception as e:
         print(f"  [WARN] elapsed time: {e}")
         return "-", "-"
-
-
-# =========================================================
-# BIO SAMPLING XLSX — column constants
-# =========================================================
-
-C_STATION = 1;  C_TYPE   = 2;  C_CLOUD  = 3
-C_DATE_S  = 4;  C_TIME_S = 5;  C_LAT_S  = 6;  C_LON_S  = 7
-C_DATE_E  = 8;  C_TIME_E = 9;  C_LAT_E  = 10; C_LON_E  = 11
-C_DEVICE  = 12; C_MOUTH_D= 13; C_DEPTH  = 14
-C_SIZE_MIN= 15; C_SIZE_MAX=16; C_COMMENT= 17
-C_DURATION= 18; C_DISTANCE=19; C_SOG_MOY=20; C_SOG_NMEA=21
-C_SURFACE = 22; C_VOL_NET= 23; C_VOL_CONC=24
-C_PS_STAT = 25; C_BARCODE= 26
-C_VOL_LAMP= 27; C_TFILT_S= 28; C_TFILT_E=29
-C_SATUR   = 30; C_VFILT  = 31
-C_VCURIO  = 32; C_CONCDIL= 33; C_NBIMG  = 34
-C_VPSCOPE = 35; C_ACQ    = 36; C_SEG    = 37; C_FPSCOPE= 38
-C_VPSCEFF = 39; C_VIMAGED= 40; C_CONCFIL= 41
-C_TTURBI  = 42; C_TURBI1 = 43; C_TURBI2 = 44; C_TURBI3 = 45
-C_SECCHI  = 46
-
-
-def _bio_deg_min(decimal, is_lon=False):
-    if decimal is None: return None
-    try:
-        if np.isnan(float(decimal)): return None
-    except: pass
-    direction = ("E" if decimal >= 0 else "W") if is_lon else ("N" if decimal >= 0 else "S")
-    dw = 3 if is_lon else 2
-    a = abs(float(decimal)); deg = int(a); mn = (a - deg) * 60.0
-    return f"{deg:0{dw}d}\u00b0{mn:07.4f}'{direction}"
-
-
-def _bio_ts_date(ts):
-    if ts is None: return None
-    t = pd.Timestamp(ts)
-    return datetime.datetime(t.year, t.month, t.day)
-
-
-def _bio_ts_time(ts):
-    if ts is None: return None
-    t = pd.Timestamp(ts)
-    return datetime.time(t.hour, t.minute, t.second)
-
-
-def _bio_formula_for_row(formula, src_row, dst_row):
-    def rep(m):
-        col = m.group(1); row = int(m.group(2))
-        return f"{col}{dst_row}" if row == src_row else m.group(0)
-    return re.sub(r'([A-Z]+)(\d+)', rep, formula)
-
-
-def _bio_copy_row(ws, src_row, dst_row):
-    for c in range(1, ws.max_column + 1):
-        src = ws.cell(src_row, c); dst = ws.cell(dst_row, c)
-        if src.has_style:
-            dst.font      = copy.copy(src.font)
-            dst.fill      = copy.copy(src.fill)
-            dst.border    = copy.copy(src.border)
-            dst.alignment = copy.copy(src.alignment)
-            dst.number_format = src.number_format
-        if isinstance(src.value, str) and src.value.startswith("="):
-            dst.value = _bio_formula_for_row(src.value, src_row, dst_row)
-
-
-def _parse_bio_events(df_events):
-    if df_events.empty or "timestamp" not in df_events.columns:
-        return []
-
-    ev = (df_events.dropna(subset=["timestamp"])
-          .sort_values("timestamp").reset_index(drop=True))
-
-    stations        = []
-    bio_open        = {}
-    hyp_open        = {}
-    filtration_open = {}
-    net_open        = {}
-    bio_sub_cnt     = {}
-
-    def latlon(row):
-        lat = row.get("lat", np.nan); lon = row.get("lon", np.nan)
-        if isinstance(lat, float) and np.isnan(lat): lat = None
-        if isinstance(lon, float) and np.isnan(lon): lon = None
-        return lat, lon
-
-    for _, row in ev.iterrows():
-        etype  = str(row.get("event_type", ""))
-        edetail= str(row.get("event_detail", ""))
-        ts     = row.get("timestamp")
-        lat, lon = latlon(row)
-        raw    = str(row.get("event_raw", ""))
-
-        if etype == "HYPERNET" and edetail.startswith("ON"):
-            m = re.search(r"STATION\s+(Vela_Lab_hyp_st_\d+)", raw)
-            sid = m.group(1) if m else "Vela_Lab_hyp_st_???"
-            hyp_open[sid] = {"station_id":sid,"type":"hyp",
-                             "ts_start":ts,"lat_start":lat,"lon_start":lon}
-
-        elif etype == "HYPERNET" and edetail.startswith("OFF"):
-            m = re.search(r"STATION\s+(Vela_Lab_hyp_st_\d+)", raw)
-            sid = m.group(1) if m else None
-            if sid and sid in hyp_open:
-                rec = hyp_open.pop(sid)
-                rec["ts_end"] = ts; rec["lat_end"] = lat; rec["lon_end"] = lon
-                stations.append(("hyp", sid, rec))
-
-        elif "TURBIDITY" in raw:
-            m_sid = re.search(r"STATION\s+(Vela_Lab_hyp_st_\d+)", raw)
-            sid   = m_sid.group(1) if m_sid else None
-            t1 = re.search(r"T1=([\d.]+)", raw); t2 = re.search(r"T2=([\d.]+)", raw)
-            t3 = re.search(r"T3=([\d.]+)", raw)
-            turbi = {"ts":ts,"t1":float(t1.group(1)) if t1 else None,
-                     "t2":float(t2.group(1)) if t2 else None,
-                     "t3":float(t3.group(1)) if t3 else None}
-            if sid and sid in hyp_open:
-                hyp_open[sid].setdefault("turbidities", []).append(turbi)
-
-        elif "SECCHI" in raw:
-            m_sid   = re.search(r"STATION\s+(Vela_Lab_hyp_st_\d+)", raw)
-            m_depth = re.search(r"DEPTH\s+([\d.]+)", raw)
-            sid     = m_sid.group(1) if m_sid else None
-            if sid and sid in hyp_open:
-                hyp_open[sid]["secchi"] = {"ts":ts,
-                                           "depth":float(m_depth.group(1)) if m_depth else None}
-
-        elif "BIO ON" in raw:
-            m = re.search(r"STATION\s+(Vela_Lab_bio_st_\d+)", raw)
-            sid = m.group(1) if m else "Vela_Lab_bio_st_???"
-            bio_open[sid]    = {"station_id":sid,"type":"bio",
-                                "ts_start":ts,"lat_start":lat,"lon_start":lon,"subs":[]}
-            bio_sub_cnt[sid] = 0
-
-        elif "BIO OFF" in raw:
-            m = re.search(r"STATION\s+(Vela_Lab_bio_st_\d+)", raw)
-            sid = m.group(1) if m else None
-            if sid and sid in bio_open:
-                bio_open[sid]["ts_end"] = ts
-                bio_open[sid]["lat_end"] = lat; bio_open[sid]["lon_end"] = lon
-                stations.append(("bio", sid, bio_open.pop(sid)))
-
-        elif etype == "NET" and edetail.startswith("ON"):
-            m = re.search(r"STATION\s+(Vela_Lab_bio_st_\d+)", raw)
-            sid = m.group(1) if m else None
-            if sid and sid in bio_open:
-                net_open[sid] = {"ts_start":ts,"lat_start":lat,"lon_start":lon}
-
-        elif etype == "NET" and edetail.startswith("OFF"):
-            m = re.search(r"STATION\s+(Vela_Lab_bio_st_\d+)", raw)
-            sid = m.group(1) if m else None
-            if sid and sid in bio_open and sid in net_open:
-                n = net_open.pop(sid)
-                bio_sub_cnt[sid] = bio_sub_cnt.get(sid, 0) + 1
-                bio_open[sid]["subs"].append({
-                    "device":"net","sub_n":bio_sub_cnt[sid],
-                    "ts_start":n["ts_start"],"lat_start":n["lat_start"],"lon_start":n["lon_start"],
-                    "ts_end":ts,"lat_end":lat,"lon_end":lon,
-                })
-
-        elif etype == "OTHER" and "BUCKET" in raw:
-            m = re.search(r"STATION\s+(Vela_Lab_bio_st_\d+)", raw)
-            sid = m.group(1) if m else (next(iter(bio_open)) if bio_open else None)
-            if sid and sid in bio_open:
-                bio_sub_cnt[sid] = bio_sub_cnt.get(sid, 0) + 1
-                bio_open[sid]["subs"].append({
-                    "device":"bucket","sub_n":bio_sub_cnt[sid],
-                    "ts_start":ts,"lat_start":lat,"lon_start":lon,
-                    "ts_end":None,"lat_end":None,"lon_end":None,
-                })
-
-        elif "FILTRATION ON" in raw:
-            m_sid  = re.search(r"STATION\s+(Vela_Lab_bio_st_\d+)", raw)
-            m_size = re.search(r"SIZE\s+(\w+)", raw)
-            sid    = m_sid.group(1) if m_sid else None
-            if sid:
-                filtration_open[sid] = {"ts_start":ts,
-                                        "size":m_size.group(1) if m_size else None}
-
-        elif "FILTRATION OFF" in raw:
-            m_sid  = re.search(r"STATION\s+(Vela_Lab_bio_st_\d+)", raw)
-            m_vol  = re.search(r"VOLUME\s+([\d.]+)", raw)
-            m_sat  = re.search(r"SATURATION\s+(YES|NO)", raw)
-            m_size = re.search(r"SIZE\s+(\w+)", raw)
-            sid    = m_sid.group(1) if m_sid else (next(iter(filtration_open)) if filtration_open else None)
-            if sid and sid in filtration_open:
-                fo = filtration_open.pop(sid)
-                if sid in bio_open and bio_open[sid]["subs"]:
-                    bio_open[sid]["subs"][-1]["filtration"] = {
-                        "ts_start":fo["ts_start"],"ts_end":ts,
-                        "size":m_size.group(1) if m_size else fo.get("size"),
-                        "volume":float(m_vol.group(1)) if m_vol else None,
-                        "saturation":m_sat.group(1) if m_sat else None,
-                    }
-
-    for sid, rec in hyp_open.items():  stations.append(("hyp", sid, rec))
-    for sid, rec in bio_open.items():  stations.append(("bio", sid, rec))
-    return stations
-
-
-def generate_bio_xlsx(df_events, template_path, out_path):
-    stations = _parse_bio_events(df_events)
-    if not stations:
-        print("  BIO XLSX: no bio/hyp stations found in events.")
-        return
-
-    shutil.copy2(template_path, out_path)
-    wb = load_workbook(out_path)
-    ws = wb.active
-
-    existing = {}
-    for r in range(3, ws.max_row + 1):
-        v = ws.cell(r, C_STATION).value
-        if v and str(v).startswith("Vela_Lab"):
-            existing[str(v)] = r
-
-    TMPL_HYP = 3; TMPL_BIO = 6; TMPL_BKT = 7
-
-    def next_free():
-        r = 3
-        while ws.cell(r, C_STATION).value: r += 1
-        return r
-
-    def ensure_row(sid, tmpl):
-        if sid in existing: return existing[sid]
-        r = next_free()
-        _bio_copy_row(ws, tmpl, r)
-        ws.cell(r, C_STATION).value = sid
-        existing[sid] = r
-        return r
-
-    def sc(r, c, v):
-        if v is not None: ws.cell(r, c).value = v
-
-    for stype, sid, rec in stations:
-        if stype == "hyp":
-            r = ensure_row(sid, TMPL_HYP)
-            sc(r, C_STATION, sid)
-            sc(r, C_DATE_S, _bio_ts_date(rec.get("ts_start")))
-            sc(r, C_TIME_S, _bio_ts_time(rec.get("ts_start")))
-            sc(r, C_LAT_S,  _bio_deg_min(rec.get("lat_start"), False))
-            sc(r, C_LON_S,  _bio_deg_min(rec.get("lon_start"), True))
-            sc(r, C_DATE_E, _bio_ts_date(rec.get("ts_end")))
-            sc(r, C_TIME_E, _bio_ts_time(rec.get("ts_end")))
-            sc(r, C_LAT_E,  _bio_deg_min(rec.get("lat_end"), False))
-            sc(r, C_LON_E,  _bio_deg_min(rec.get("lon_end"), True))
-            turbis = rec.get("turbidities", [])
-            if turbis:
-                f = turbis[0]
-                sc(r, C_TTURBI, _bio_ts_time(f["ts"]))
-                sc(r, C_TURBI1, f.get("t1")); sc(r, C_TURBI2, f.get("t2")); sc(r, C_TURBI3, f.get("t3"))
-            sec = rec.get("secchi")
-            if sec: sc(r, C_SECCHI, sec.get("depth"))
-
-        elif stype == "bio":
-            subs = rec.get("subs", [])
-            if not subs:
-                sub_sid = f"{sid}_1"
-                r = ensure_row(sub_sid, TMPL_BIO)
-                sc(r, C_STATION, sub_sid)
-                sc(r, C_DATE_S, _bio_ts_date(rec.get("ts_start")))
-                sc(r, C_TIME_S, _bio_ts_time(rec.get("ts_start")))
-                sc(r, C_LAT_S,  _bio_deg_min(rec.get("lat_start"), False))
-                sc(r, C_LON_S,  _bio_deg_min(rec.get("lon_start"), True))
-                continue
-            for sub in subs:
-                sub_sid = f"{sid}_{sub.get('sub_n',1)}"
-                dev     = sub.get("device", "")
-                r = ensure_row(sub_sid, TMPL_BKT if dev == "bucket" else TMPL_BIO)
-                sc(r, C_STATION, sub_sid)
-                sc(r, C_DATE_S, _bio_ts_date(sub.get("ts_start")))
-                sc(r, C_TIME_S, _bio_ts_time(sub.get("ts_start")))
-                sc(r, C_LAT_S,  _bio_deg_min(sub.get("lat_start"), False))
-                sc(r, C_LON_S,  _bio_deg_min(sub.get("lon_start"), True))
-                sc(r, C_DATE_E, _bio_ts_date(sub.get("ts_end")))
-                sc(r, C_TIME_E, _bio_ts_time(sub.get("ts_end")))
-                sc(r, C_LAT_E,  _bio_deg_min(sub.get("lat_end"), False))
-                sc(r, C_LON_E,  _bio_deg_min(sub.get("lon_end"), True))
-                if dev == "bucket": sc(r, C_DEVICE, "Bucket")
-                filt = sub.get("filtration")
-                if filt:
-                    sc(r, C_TFILT_S, _bio_ts_time(filt.get("ts_start")))
-                    sc(r, C_TFILT_E, _bio_ts_time(filt.get("ts_end")))
-                    sc(r, C_SATUR,   filt.get("saturation"))
-                    if filt.get("volume") is not None:
-                        sc(r, C_VFILT, filt["volume"])
-
-    wb.save(out_path)
-    print(f"  BIO XLSX: {out_path}  ({len(stations)} stations)")
 
 
 # =========================================================
@@ -1258,11 +1010,13 @@ def generate_bio_xlsx(df_events, template_path, out_path):
 def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
 
     doc = SimpleDocTemplate(
-        out_pdf, pagesize=landscape(A4),
+        out_pdf,
+        pagesize=landscape(A4),
         leftMargin=1.5*cm, rightMargin=1.5*cm,
         topMargin=1.5*cm,  bottomMargin=1.5*cm,
     )
-    styles     = getSampleStyleSheet()
+    styles = getSampleStyleSheet()
+
     style_section = ParagraphStyle("Section", parent=styles["Heading2"],
         fontSize=10, textColor=HEADER_COLOR, spaceAfter=4, spaceBefore=10)
     style_cell = ParagraphStyle("Cell", parent=styles["Normal"],
@@ -1270,6 +1024,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
 
     content = []
 
+    # --- TITLE ---
     title = "NAVIGATION LOGBOOK" + ("  —  LOG IN PROGRESS" if in_progress else "")
     content.append(Paragraph(title, styles["Title"]))
     content.append(Spacer(1, 6))
@@ -1278,23 +1033,28 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         styles["Normal"]))
     content.append(Spacer(1, 10))
 
-    arrival_str    = meta.get("arrival","") or ("IN PROGRESS" if in_progress else "—")
+    # -------------------------------------------------------
+    # VOYAGE SUMMARY CARD
+    # -------------------------------------------------------
+    arrival_str = meta.get("arrival","") or ("IN PROGRESS" if in_progress else "—")
     route_type_str = meta.get("route_type","") or "—"
 
     fiche_data = [
-        ["DATE",        meta.get("date_depart","—"),  "SKIPPER",    meta.get("skipper","—")],
-        ["CREW",        meta.get("crew","—"),          "",           ""],
-        ["DEPARTURE",   meta.get("departure","—"),     "LAT. DEST.", meta.get("destination_lat","—")],
-        ["ARRIVAL",     arrival_str,                   "LON. DEST.", meta.get("destination_lon","—")],
+        ["DATE",        meta.get("date_depart","—"),  "SKIPPER",      meta.get("skipper","—")],
+        ["CREW",        meta.get("crew","—"),          "",             ""],
+        ["DEPARTURE",   meta.get("departure","—"),     "LAT. DEST.",   meta.get("destination_lat","—")],
+        ["ARRIVAL",     arrival_str,                   "LON. DEST.",   meta.get("destination_lon","—")],
         ["DESTINATION", meta.get("destination","—"),   "INIT. DIST.",
          (meta.get("initial_dist_nm","—") or "—").replace("nm","").strip() + " nm"],
-        ["DIRECT LEG",  route_type_str,                "",           ""],
+        ["DIRECT LEG",  route_type_str,                "",             ""],
     ]
 
     style_fiche_lbl = ParagraphStyle("FicheLbl", parent=styles["Normal"],
         fontSize=8, textColor=colors.white, fontName="Helvetica-Bold")
     style_fiche_val = ParagraphStyle("FicheVal", parent=styles["Normal"], fontSize=8)
+
     DEP_ROW = 2; ARR_ROW = 3
+
     dep_bg = colors.HexColor("#d5f5e3"); arr_bg = colors.HexColor("#f5c6cb")
 
     fiche_display = [
@@ -1304,28 +1064,39 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
          Paragraph(str(r[3]), style_fiche_val)]
         for r in fiche_data
     ]
+
     fiche_style = TableStyle([
-        ("BACKGROUND",(0,0),(-1,-1),colors.white),
-        ("BACKGROUND",(0,0),(0,-1), HEADER_COLOR),
-        ("BACKGROUND",(2,0),(2,-1), HEADER_COLOR),
-        ("BACKGROUND",(1,DEP_ROW),(1,DEP_ROW),dep_bg),
-        ("BACKGROUND",(1,ARR_ROW),(1,ARR_ROW),arr_bg),
-        ("FONTNAME",(0,0),(-1,-1),"Helvetica"),("FONTSIZE",(0,0),(-1,-1),8),
-        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
-        ("GRID",(0,0),(-1,-1),0.4,colors.HexColor("#c0cfe0")),
-        ("LEFTPADDING",(0,0),(-1,-1),6),("RIGHTPADDING",(0,0),(-1,-1),6),
-        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+        ("BACKGROUND",    (0,0), (-1,-1), colors.white),
+        ("BACKGROUND",    (0,0), (0,-1),  HEADER_COLOR),
+        ("BACKGROUND",    (2,0), (2,-1),  HEADER_COLOR),
+        ("BACKGROUND",    (1,DEP_ROW), (1,DEP_ROW), dep_bg),
+        ("BACKGROUND",    (1,ARR_ROW), (1,ARR_ROW), arr_bg),
+        ("FONTNAME",      (0,0), (-1,-1), "Helvetica"),
+        ("FONTSIZE",      (0,0), (-1,-1), 8),
+        ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+        ("GRID",          (0,0), (-1,-1), 0.4, colors.HexColor("#c0cfe0")),
+        ("LEFTPADDING",   (0,0), (-1,-1), 6), ("RIGHTPADDING",  (0,0), (-1,-1), 6),
+        ("TOPPADDING",    (0,0), (-1,-1), 4), ("BOTTOMPADDING", (0,0), (-1,-1), 4),
     ])
+
     COL_WIDTHS_FICHE = [3.0*cm, 8.5*cm, 3.0*cm, 8.5*cm]
     tf = Table(fiche_display, colWidths=COL_WIDTHS_FICHE)
     tf.setStyle(fiche_style)
-    content.append(tf); content.append(Spacer(1, 8))
+    content.append(tf)
+    content.append(Spacer(1, 8))
 
-    # CHECKUP
+    # -------------------------------------------------------
+    # CHECKUP — engine + boat + end of trip, 2 colonnes sans ligne vide
+    # -------------------------------------------------------
     content.append(Paragraph("CHECKUP", style_section))
-    def _ok(val): return str(val) if val else "—"
 
+    def _ok(val):
+        return str(val) if val else "—"
+
+    # Construction de la liste plate dans l'ordre souhaité :
+    # ENGINE CHECK → BOAT CHECK → END OF TRIP CONTROL
     all_entries = []
+
     all_entries.append(("HDR", "ENGINE CHECK"))
     for lbl, val in [
         ("Last fill (L)",                    _ok(meta.get("last_fill_l",""))),
@@ -1340,7 +1111,8 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         ("Belt tension",                     _ok(meta.get("belt",""))),
         ("Priming bulb",                     _ok(meta.get("priming_bulb",""))),
         ("Sea cock + ignition",              _ok(meta.get("seacock",""))),
-    ]: all_entries.append(("ROW", lbl, val))
+    ]:
+        all_entries.append(("ROW", lbl, val))
 
     all_entries.append(("HDR", "BOAT CHECK"))
     for lbl, val in [
@@ -1348,7 +1120,8 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         ("Portholes closed", _ok(meta.get("portholes_closed",""))),
         ("Sea cocks closed", _ok(meta.get("seacocks_closed",""))),
         ("Boat stowed",      _ok(meta.get("boat_stowed",""))),
-    ]: all_entries.append(("ROW", lbl, val))
+    ]:
+        all_entries.append(("ROW", lbl, val))
 
     all_entries.append(("HDR", "END OF TRIP CONTROL"))
     for lbl, val in [
@@ -1357,66 +1130,92 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         ("Hull clean",          _ok(meta.get("hull_clean",""))),
         ("Engine bilge dry",    _ok(meta.get("engine_bilge_end",""))),
         ("Fore bilge dry",      _ok(meta.get("fore_bilge_end",""))),
-    ]: all_entries.append(("ROW", lbl, val))
+    ]:
+        all_entries.append(("ROW", lbl, val))
 
+    # Répartition en 2 colonnes équilibrées sans ligne vide
     mid = math.ceil(len(all_entries) / 2)
     left_seq  = all_entries[:mid]
     right_seq = all_entries[mid:]
-    while len(right_seq) < len(left_seq): right_seq.append(("BLANK",))
-    while len(left_seq) < len(right_seq): left_seq.append(("BLANK",))
+
+    while len(right_seq) < len(left_seq):
+        right_seq.append(("BLANK",))
+    while len(left_seq) < len(right_seq):
+        left_seq.append(("BLANK",))
 
     style_chk_lbl = ParagraphStyle("ChkLbl", parent=styles["Normal"],
         fontSize=7, textColor=colors.white, fontName="Helvetica-Bold")
     style_chk_val = ParagraphStyle("ChkVal", parent=styles["Normal"], fontSize=7)
     style_chk_hdr = ParagraphStyle("ChkHdr", parent=styles["Normal"],
         fontSize=8, textColor=colors.white, fontName="Helvetica-Bold", alignment=1)
-    CW_LBL = 3.5*cm; CW_VAL = 8.0*cm
+
+    CW_LBL = 3.5*cm
+    CW_VAL = 8.0*cm
     COL_WIDTHS_CHK = [CW_LBL, CW_VAL, CW_LBL, CW_VAL]
 
-    def _cell_lbl(text): return Paragraph(f"<b>{text}</b>", style_chk_lbl) if text else ""
-    def _cell_val(text): return Paragraph(str(text), style_chk_val) if text else ""
-    def _cell_hdr(text): return Paragraph(f"<b>{text}</b>", style_chk_hdr)
+    def _cell_lbl(text):
+        return Paragraph(f"<b>{text}</b>", style_chk_lbl) if text else ""
+    def _cell_val(text):
+        return Paragraph(str(text), style_chk_val) if text else ""
+    def _cell_hdr(text):
+        return Paragraph(f"<b>{text}</b>", style_chk_hdr)
 
-    checkup_rows = []; style_cmds = []
+    checkup_rows = []
+    style_cmds   = []
+
     for ri, (L, R) in enumerate(zip(left_seq, right_seq)):
         if L[0] == "HDR":
             lc0 = _cell_hdr(L[1]); lc1 = ""
-            style_cmds += [("SPAN",(0,ri),(1,ri)),("BACKGROUND",(0,ri),(1,ri),HEADER_COLOR),
-                           ("ALIGN",(0,ri),(1,ri),"CENTER")]
+            style_cmds += [
+                ("SPAN",       (0, ri), (1, ri)),
+                ("BACKGROUND", (0, ri), (1, ri), HEADER_COLOR),
+                ("ALIGN",      (0, ri), (1, ri), "CENTER"),
+            ]
         elif L[0] == "ROW":
             lc0 = _cell_lbl(L[1]); lc1 = _cell_val(L[2])
-            style_cmds.append(("BACKGROUND",(0,ri),(0,ri),HEADER_COLOR))
+            style_cmds.append(("BACKGROUND", (0, ri), (0, ri), HEADER_COLOR))
         else:
             lc0 = ""; lc1 = ""
+
         if R[0] == "HDR":
             rc0 = _cell_hdr(R[1]); rc1 = ""
-            style_cmds += [("SPAN",(2,ri),(3,ri)),("BACKGROUND",(2,ri),(3,ri),HEADER_COLOR),
-                           ("ALIGN",(2,ri),(3,ri),"CENTER")]
+            style_cmds += [
+                ("SPAN",       (2, ri), (3, ri)),
+                ("BACKGROUND", (2, ri), (3, ri), HEADER_COLOR),
+                ("ALIGN",      (2, ri), (3, ri), "CENTER"),
+            ]
         elif R[0] == "ROW":
             rc0 = _cell_lbl(R[1]); rc1 = _cell_val(R[2])
-            style_cmds.append(("BACKGROUND",(2,ri),(2,ri),HEADER_COLOR))
+            style_cmds.append(("BACKGROUND", (2, ri), (2, ri), HEADER_COLOR))
         else:
             rc0 = ""; rc1 = ""
+
         checkup_rows.append([lc0, lc1, rc0, rc1])
 
     base_chk_style = [
-        ("FONTNAME",(0,0),(-1,-1),"Helvetica"),("FONTSIZE",(0,0),(-1,-1),7),
-        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
-        ("GRID",(0,0),(-1,-1),0.3,colors.HexColor("#bbbbbb")),
-        ("LEFTPADDING",(0,0),(-1,-1),5),("RIGHTPADDING",(0,0),(-1,-1),5),
-        ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3),
-        ("BACKGROUND",(0,0),(-1,-1),colors.white),
+        ("FONTNAME",      (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE",      (0, 0), (-1, -1), 7),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID",          (0, 0), (-1, -1), 0.3, colors.HexColor("#bbbbbb")),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
+        ("TOPPADDING",    (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("BACKGROUND",    (0, 0), (-1, -1), colors.white),
     ]
     for ri, (L, R) in enumerate(zip(left_seq, right_seq)):
         if L[0] == "ROW" and ri % 2 == 0:
-            base_chk_style.append(("BACKGROUND",(1,ri),(1,ri),ALT_COLOR))
+            base_chk_style.append(("BACKGROUND", (1, ri), (1, ri), ALT_COLOR))
         if R[0] == "ROW" and ri % 2 == 0:
-            base_chk_style.append(("BACKGROUND",(3,ri),(3,ri),ALT_COLOR))
+            base_chk_style.append(("BACKGROUND", (3, ri), (3, ri), ALT_COLOR))
 
+    all_chk_cmds = base_chk_style + style_cmds
     checkup_tbl = Table(checkup_rows, colWidths=COL_WIDTHS_CHK)
-    checkup_tbl.setStyle(TableStyle(base_chk_style + style_cmds))
-    content.append(checkup_tbl); content.append(Spacer(1, 14))
+    checkup_tbl.setStyle(TableStyle(all_chk_cmds))
+    content.append(checkup_tbl)
+    content.append(Spacer(1, 14))
 
+    # --- sorted df2 ---
     df2 = pd.DataFrame()
     if "datetime" in df.columns and not df.empty:
         df2 = df.dropna(subset=["datetime"]).copy()
@@ -1434,210 +1233,310 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
 
     miles_per_slot = {}
     if not df2.empty and hourly_slots:
-        lats_v = df2["lat_raw"].values; lons_v = df2["lon_raw"].values
+        lats_v = df2["lat_raw"].values;  lons_v = df2["lon_raw"].values
         valid  = ~(np.isnan(lats_v) | np.isnan(lons_v))
         d_arr  = np.zeros(len(df2))
         if valid.any():
-            seg = np.where(valid[:-1]&valid[1:],
-                           haversine_vec(lats_v[:-1],lons_v[:-1],lats_v[1:],lons_v[1:]),0.0)
-            seg = np.where(seg > 1, 0.0, seg); d_arr[1:] = seg
-        cum_nm  = np.cumsum(d_arr)
-        ts_ns_v = df2["datetime"].values.astype("int64")
-        slots_ns= np.array([pd.Timestamp(s).value for s in hourly_slots])
+            seg = np.where(
+                valid[:-1] & valid[1:],
+                haversine_vec(lats_v[:-1], lons_v[:-1], lats_v[1:], lons_v[1:]),
+                0.0
+            )
+            seg = np.where(seg > 1, 0.0, seg)
+            d_arr[1:] = seg
+        cum_nm = np.cumsum(d_arr)
+        ts_ns_v  = df2["datetime"].values.astype("int64")
+        slots_ns = np.array([pd.Timestamp(s).value for s in hourly_slots])
         for slot, slot_ns in zip(hourly_slots, slots_ns):
             idx = np.searchsorted(ts_ns_v, slot_ns, side="right") - 1
-            if idx >= 0: miles_per_slot[slot] = float(cum_nm[idx])
+            if idx >= 0:
+                miles_per_slot[slot] = float(cum_nm[idx])
 
     engine_minutes_by_slot = {}
     if not df_events.empty and "timestamp" in df_events.columns and "engine_minutes" in df_events.columns:
-        ev_eh    = df_events.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+        ev_eh = df_events.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
         eh_ts_ns = ev_eh["timestamp"].apply(lambda x: pd.Timestamp(x).value).values
         eh_vals  = ev_eh["engine_minutes"].values.astype(float)
-        for slot, slot_ns in zip(hourly_slots,[pd.Timestamp(s).value for s in hourly_slots]):
+        for slot, slot_ns in zip(hourly_slots,
+                                  [pd.Timestamp(s).value for s in hourly_slots]):
             idx = np.searchsorted(eh_ts_ns, slot_ns, side="right") - 1
             engine_minutes_by_slot[slot] = float(eh_vals[idx]) if idx >= 0 else 0.0
 
     equipment_by_slot = {}
     if not df_events.empty and "timestamp" in df_events.columns:
         ev = df_events.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
-        cur_e="OFF";cur_m="OFF";cur_j="OFF";cur_st="OFF";cur_sm="OFF";cur_sp="OFF"
-        cur_sea_s="0";cur_h="OFF";cur_n="OFF";cur_i="OFF"
-        cur_ck="OFF";cur_cp="OFF";cur_ci="OFF";ev_idx=0
+        cur_e="OFF"; cur_m="OFF"; cur_j="OFF"; cur_st="OFF"; cur_sm="OFF"; cur_sp="OFF"
+        cur_sea_s="0"; cur_h="OFF"; cur_n="OFF"; cur_i="OFF"
+        cur_ck="OFF"; cur_cp="OFF"; cur_ci="OFF"; ev_idx=0
         ev_ts_ns2 = ev["timestamp"].apply(lambda x: pd.Timestamp(x).value).values
-        for slot, slot_ns in zip(hourly_slots,[pd.Timestamp(s).value for s in hourly_slots]):
+        for slot, slot_ns in zip(hourly_slots,
+                                  [pd.Timestamp(s).value for s in hourly_slots]):
             while ev_idx < len(ev) and ev_ts_ns2[ev_idx] <= slot_ns:
                 row=ev.iloc[ev_idx]; et=row["event_type"]; ed=row["event_detail"]
-                if et=="ENGINE":     cur_e  ="ON" if "ON" in ed else "OFF"
-                elif et=="MAIN":     cur_m  ="ON" if "ON" in ed else "OFF"
-                elif et=="JIB":      cur_j  =ed
-                elif et=="STAYSAIL": cur_st =ed
-                elif et=="STORMJIB": cur_sm =ed
-                elif et=="SPINNAKER":cur_sp =ed
-                elif et=="SEA":      cur_sea_s=ed
-                elif et=="HYPERNET": cur_h  =ed
-                elif et=="NET":      cur_n  =ed
-                elif et=="INLINE":   cur_i  =ed
-                elif et=="CTD_KEEL":      cur_ck=ed
-                elif et=="CTD_PROFILE":   cur_cp=ed
-                elif et=="CTD_INTERCOMP": cur_ci=ed
+                if et=="ENGINE":    cur_e  = "ON" if "ON" in ed else "OFF"
+                elif et=="MAIN":    cur_m  = "ON" if "ON" in ed else "OFF"
+                elif et=="JIB":     cur_j  = ed
+                elif et=="STAYSAIL":cur_st = ed
+                elif et=="STORMJIB":cur_sm = ed
+                elif et=="SPINNAKER":cur_sp= ed
+                elif et=="SEA":     cur_sea_s = ed
+                elif et=="HYPERNET":cur_h  = ed
+                elif et=="NET":     cur_n  = ed
+                elif et=="INLINE":  cur_i  = ed
+                elif et=="CTD_KEEL":     cur_ck = ed
+                elif et=="CTD_PROFILE":  cur_cp = ed
+                elif et=="CTD_INTERCOMP":cur_ci = ed
                 ev_idx += 1
-            sails=[x for x,s in [("MAIN",cur_m),("JIB",cur_j),("STAYSAIL",cur_st),
-                                  ("STORM JIB",cur_sm),("SPINNAKER",cur_sp)] if s=="ON"]
-            sci  =[x for x,s in [("HYPERNET",cur_h),("NET",cur_n),("INLINE",cur_i),
-                                  ("CTD KEEL",cur_ck),("CTD PROF",cur_cp),
-                                  ("CTD INTER",cur_ci)] if s=="ON"]
+            sails = [x for x,s in [("MAIN",cur_m),("JIB",cur_j),("STAYSAIL",cur_st),
+                                    ("STORM JIB",cur_sm),("SPINNAKER",cur_sp)] if s=="ON"]
+            sci   = [x for x,s in [("HYPERNET",cur_h),("NET",cur_n),("INLINE",cur_i),
+                                    ("CTD KEEL",cur_ck),("CTD PROF",cur_cp),
+                                    ("CTD INTER",cur_ci)] if s=="ON"]
             equipment_by_slot[slot] = {
-                "engine":cur_e,"sails":"+".join(sails) if sails else "-",
-                "sea":cur_sea_s,"science":"+".join(sci) if sci else "-",
+                "engine": cur_e,
+                "sails":  "+".join(sails) if sails else "-",
+                "sea":    cur_sea_s,
+                "science":"+".join(sci)   if sci   else "-",
             }
 
     slot_stats = precompute_slot_stats(df2, hourly_slots)
 
-    # HOURLY LOG
+    # -------------------------------------------------------
+    # TABLE 1 : HOURLY LOG
+    # -------------------------------------------------------
     content.append(Paragraph("HOURLY LOG", style_section))
-    CW = [1.8*cm,2.3*cm,2.3*cm,1.3*cm,2.4*cm,0.8*cm,2.6*cm,
-          1.2*cm,1.2*cm,1.2*cm,1.2*cm,1.4*cm,1.9*cm,1.6*cm,
-          1.4*cm,1.4*cm,1.4*cm,1.4*cm]
-    HIGHLIGHT_COLS = [14,15,16,17]; ENG_H_COL = 13
+
+    CW = [
+        1.8*cm, 2.3*cm, 2.3*cm, 1.3*cm, 2.4*cm, 0.8*cm, 2.6*cm,
+        1.2*cm, 1.2*cm, 1.2*cm, 1.2*cm, 1.4*cm, 1.9*cm, 1.6*cm,
+        1.4*cm, 1.4*cm, 1.4*cm, 1.4*cm,
+    ]
+
+    HIGHLIGHT_COLS = [14, 15, 16, 17]
+    ENG_H_COL      = 13
 
     if not df2.empty and hourly_slots:
-        header_h = ["TIME\n(UTC)","LAT","LON","ENGINE","SAILS","SEA","SCIENCE",
-                    "SOG\n(kn)","TWS\n(kn)","TWD\n(°)","HDG\n(°)",
-                    "DIST\ncum(nm)","DIST\nrem / %","ENGINE\ncum",
-                    "TWS\nmoy(kn)","SOG\nmoy(kn)","SOG\nmax(kn)","TWS\nmax(kn)"]
-        table_h = [header_h]; prev_date = None
-        col_values = {c:[] for c in HIGHLIGHT_COLS}; data_rows = []
+
+        header_h = [
+            "TIME\n(UTC)", "LAT", "LON",
+            "ENGINE", "SAILS", "SEA", "SCIENCE",
+            "SOG\n(kn)", "TWS\n(kn)", "TWD\n(°)", "HDG\n(°)",
+            "DIST\ncum(nm)", "DIST\nrem / %",
+            "ENGINE\ncum",
+            "TWS\nmoy(kn)", "SOG\nmoy(kn)", "SOG\nmax(kn)", "TWS\nmax(kn)",
+        ]
+
+        table_h  = [header_h]
+        prev_date = None
+        col_values = {c: [] for c in HIGHLIGHT_COLS}
+        data_rows  = []
 
         for slot in hourly_slots:
             equip = equipment_by_slot.get(slot, {})
             miles = miles_per_slot.get(slot, 0.0)
             em    = engine_minutes_by_slot.get(slot, 0.0)
             st    = slot_stats.get(slot, {})
+
             if not np.isnan(init_dist_nm):
                 remaining = max(init_dist_nm - miles, 0.0)
-                pct_done  = min(miles/init_dist_nm*100.0, 100.0) if init_dist_nm > 0 else 0.0
+                pct_done  = min(miles / init_dist_nm * 100.0, 100.0) if init_dist_nm > 0 else 0.0
                 rem_str   = f"{remaining:.1f}\n({pct_done:.0f}%)"
             else:
                 rem_str = "—"
+
             slot_date = slot.date()
-            show_date = (prev_date is None or slot_date != prev_date); prev_date = slot_date
-            row_vals = {14:safe_float(st.get("tws_moy")),15:safe_float(st.get("sog_moy")),
-                        16:safe_float(st.get("sog_max")),17:safe_float(st.get("tws_max"))}
-            for c, v in row_vals.items(): col_values[c].append(v)
+            show_date = (prev_date is None or slot_date != prev_date)
+            prev_date = slot_date
+
+            row_vals = {
+                14: safe_float(st.get("tws_moy")),
+                15: safe_float(st.get("sog_moy")),
+                16: safe_float(st.get("sog_max")),
+                17: safe_float(st.get("tws_max")),
+            }
+            for c, v in row_vals.items():
+                col_values[c].append(v)
+
             data_rows.append({
-                "slot":slot,"em":em,"row_vals":row_vals,
-                "row":[fmt_ts(slot,show_date=show_date),
-                       decimal_to_deg_min(st.get("lat"),is_lon=False),
-                       decimal_to_deg_min(st.get("lon"),is_lon=True),
-                       equip.get("engine","-"),equip.get("sails","-"),
-                       equip.get("sea","-"),equip.get("science","-"),
-                       fmt(st.get("sog_m")),fmt(st.get("tws_m")),
-                       fmt(st.get("twd_m"),0),fmt(st.get("hdg_m"),0),
-                       f"{miles:.1f}",rem_str,engine_hhmm(em),
-                       fmt(st.get("tws_moy")),fmt(st.get("sog_moy")),
-                       fmt(st.get("sog_max")),fmt(st.get("tws_max"))],
+                "slot": slot,
+                "row": [
+                    fmt_ts(slot, show_date=show_date),
+                    decimal_to_deg_min(st.get("lat"), is_lon=False),
+                    decimal_to_deg_min(st.get("lon"), is_lon=True),
+                    equip.get("engine","-"),
+                    equip.get("sails","-"),
+                    equip.get("sea","-"),
+                    equip.get("science","-"),
+                    fmt(st.get("sog_m")), fmt(st.get("tws_m")),
+                    fmt(st.get("twd_m"), 0), fmt(st.get("hdg_m"), 0),
+                    f"{miles:.1f}",
+                    rem_str,
+                    engine_hhmm(em),
+                    fmt(st.get("tws_moy")), fmt(st.get("sog_moy")),
+                    fmt(st.get("sog_max")), fmt(st.get("tws_max")),
+                ],
+                "em": em,
+                "row_vals": row_vals,
             })
 
         col_max = {}
         for c in HIGHLIGHT_COLS:
             vals = [v for v in col_values[c] if not np.isnan(v)]
             col_max[c] = max(vals) if vals else None
-        for dr in data_rows: table_h.append(dr["row"])
+
+        for dr in data_rows:
+            table_h.append(dr["row"])
 
         t_h = Table(table_h, colWidths=CW, repeatRows=1)
         ts_style = base_table_style(len(table_h))
+
         last_data_row_idx = len(data_rows)
+
         for i, dr in enumerate(data_rows):
             ri = i + 1
             for c in HIGHLIGHT_COLS:
                 v = dr["row_vals"].get(c, np.nan)
                 if col_max.get(c) is not None and not np.isnan(v) and v == col_max[c]:
-                    ts_style.append(("BACKGROUND",(c,ri),(c,ri),COLOR_HIGHLIGHT))
+                    ts_style.append(("BACKGROUND", (c, ri), (c, ri), COLOR_HIGHLIGHT))
             if ri == last_data_row_idx:
-                ts_style.append(("BACKGROUND",(ENG_H_COL,ri),(ENG_H_COL,ri),COLOR_ENG_LAST))
-        t_h.setStyle(TableStyle(ts_style)); content.append(t_h)
+                ts_style.append(("BACKGROUND", (ENG_H_COL, ri), (ENG_H_COL, ri), COLOR_ENG_LAST))
+
+        t_h.setStyle(TableStyle(ts_style))
+        content.append(t_h)
+
     else:
         content.append(Paragraph("No GPS data available.", styles["Normal"]))
+
     content.append(Spacer(1, 16))
 
-    # EVENT LOGS
+    # -------------------------------------------------------
+    # TABLE 2a : EVENT LOG — NAVIGATION
+    # -------------------------------------------------------
     content.append(Paragraph("EVENT LOG — NAVIGATION", style_section))
 
     if not df_events.empty:
         ev_sorted_all = df_events.sort_values("timestamp").reset_index(drop=True) \
                         if "timestamp" in df_events.columns else df_events.copy()
+
         ev_nav = ev_sorted_all[ev_sorted_all["event_type"].isin(NAV_EVENT_TYPES)].reset_index(drop=True)
         ev_sci = ev_sorted_all[ev_sorted_all["event_type"].isin(SCIENCE_EVENT_TYPES)].reset_index(drop=True)
 
-        ev_header = ["TIME\n(UTC)","LAT","LON","ENGINE","SAILS","SEA",
-                     "SOG\n(kn)","TWS\n(kn)","TWD\n(°)","HDG\n(°)","TYPE","DETAIL / COMMENT"]
-        cw_e = [1.8*cm,2.3*cm,2.3*cm,1.3*cm,2.4*cm,0.8*cm,
-                1.2*cm,1.2*cm,1.2*cm,1.2*cm,2.2*cm,5.1*cm]
+        ev_header = [
+            "TIME\n(UTC)", "LAT", "LON",
+            "ENGINE", "SAILS", "SEA",
+            "SOG\n(kn)", "TWS\n(kn)", "TWD\n(°)", "HDG\n(°)",
+            "TYPE", "DETAIL / COMMENT",
+        ]
+        cw_e = [1.8*cm, 2.3*cm, 2.3*cm, 1.3*cm, 2.4*cm, 0.8*cm,
+                1.2*cm, 1.2*cm, 1.2*cm, 1.2*cm, 2.2*cm, 5.1*cm]
 
         def build_event_table(ev_df, show_science_col=False):
-            if ev_df.empty: return None
+            if ev_df.empty:
+                return None
+
             ev_instants = precompute_event_instants(
-                df2, list(ev_df.get("timestamp", pd.Series([]))))
-            hdr = ev_header[:]; cw = cw_e[:]
+                df2, list(ev_df.get("timestamp", pd.Series([])))
+            )
+
+            hdr = ev_header[:]
+            cw  = cw_e[:]
             if show_science_col:
                 hdr = ev_header[:6] + ["SCIENCE"] + ev_header[6:]
                 cw  = cw_e[:6] + [2.6*cm] + cw_e[6:]
-            ev_data = [hdr]; row_colors = []; prev_date_ev = None
+
+            ev_data    = [hdr]
+            row_colors = []
+            prev_date_ev = None
+
             for idx, r in ev_df.iterrows():
-                et  = str(r.get("event_type", "-")); ed = str(r.get("event_detail","-"))
+                et  = str(r.get("event_type",  "-"))
+                ed  = str(r.get("event_detail","-"))
+
                 detail_para = Paragraph(ed, style_cell)
+
                 try:
                     ev_date   = pd.Timestamp(r.get("timestamp")).date()
                     show_date = (prev_date_ev is None or ev_date != prev_date_ev)
                     prev_date_ev = ev_date
-                except: show_date = False
-                ii   = list(ev_df.index).index(idx)
+                except:
+                    show_date = False
+
+                ii = list(ev_df.index).index(idx)
                 inst = ev_instants.iloc[ii] if ii < len(ev_instants) else {}
+
                 row_colors.append(event_color(et))
-                row = [fmt_ts(r.get("timestamp"),show_date=show_date),
-                       decimal_to_deg_min(r.get("lat"),is_lon=False),
-                       decimal_to_deg_min(r.get("lon"),is_lon=True),
-                       str(r.get("engine","-")),str(r.get("sails","-")),str(r.get("sea","-"))]
-                if show_science_col: row.append(science_str_from_row(r))
-                row += [fmt(inst.get("sog_i")),fmt(inst.get("tws_i")),
-                        fmt(inst.get("twd_i"),0),fmt(inst.get("hdg_i"),0),
-                        et, detail_para]
+                row = [
+                    fmt_ts(r.get("timestamp"), show_date=show_date),
+                    decimal_to_deg_min(r.get("lat"), is_lon=False),
+                    decimal_to_deg_min(r.get("lon"), is_lon=True),
+                    str(r.get("engine","-")),
+                    str(r.get("sails", "-")),
+                    str(r.get("sea",   "-")),
+                ]
+                if show_science_col:
+                    row.append(science_str_from_row(r))
+                row += [
+                    fmt(inst.get("sog_i")), fmt(inst.get("tws_i")),
+                    fmt(inst.get("twd_i"), 0), fmt(inst.get("hdg_i"), 0),
+                    et, detail_para,
+                ]
                 ev_data.append(row)
-            TYPE_COL = len(hdr)-2; DETAIL_COL = len(hdr)-1
+
+            TYPE_COL   = len(hdr) - 2
+            DETAIL_COL = len(hdr) - 1
+
             ev_style = base_table_style(len(ev_data))
             for i in range(1, len(ev_data)):
-                ev_style.append(("BACKGROUND",(0,i),(-1,i),colors.white))
+                ev_style.append(("BACKGROUND", (0,i), (-1,i), colors.white))
             for i, col in enumerate(row_colors):
                 ri = i + 1
-                ev_style += [("BACKGROUND",(TYPE_COL,ri),(TYPE_COL,ri),col),
-                              ("BACKGROUND",(DETAIL_COL,ri),(DETAIL_COL,ri),col),
-                              ("TEXTCOLOR",(TYPE_COL,ri),(TYPE_COL,ri),COLOR_EVENT_TEXT),
-                              ("TEXTCOLOR",(DETAIL_COL,ri),(DETAIL_COL,ri),COLOR_EVENT_TEXT)]
-            ev_style.append(("VALIGN",(0,0),(-1,-1),"TOP"))
+                ev_style.append(("BACKGROUND", (TYPE_COL,   ri), (TYPE_COL,   ri), col))
+                ev_style.append(("BACKGROUND", (DETAIL_COL, ri), (DETAIL_COL, ri), col))
+                ev_style.append(("TEXTCOLOR",  (TYPE_COL,   ri), (TYPE_COL,   ri), COLOR_EVENT_TEXT))
+                ev_style.append(("TEXTCOLOR",  (DETAIL_COL, ri), (DETAIL_COL, ri), COLOR_EVENT_TEXT))
+            ev_style.append(("VALIGN", (0,0), (-1,-1), "TOP"))
+
             te = Table(ev_data, colWidths=cw, repeatRows=1)
-            te.setStyle(TableStyle(ev_style)); return te
+            te.setStyle(TableStyle(ev_style))
+            return te
 
         nav_table = build_event_table(ev_nav, show_science_col=False)
-        content.append(nav_table if nav_table else
-                       Paragraph("No navigation events recorded.", styles["Normal"]))
+        if nav_table:
+            content.append(nav_table)
+        else:
+            content.append(Paragraph("No navigation events recorded.", styles["Normal"]))
+
         content.append(Spacer(1, 16))
+
+        # -------------------------------------------------------
+        # TABLE 2b : EVENT LOG — SCIENCE
+        # -------------------------------------------------------
         content.append(Paragraph("EVENT LOG — SCIENCE", style_section))
+
         sci_table = build_event_table(ev_sci, show_science_col=True)
-        content.append(sci_table if sci_table else
-                       Paragraph("No science events recorded.", styles["Normal"]))
+        if sci_table:
+            content.append(sci_table)
+        else:
+            content.append(Paragraph("No science events recorded.", styles["Normal"]))
+
     else:
         content.append(Paragraph("No events recorded.", styles["Normal"]))
 
+    # -------------------------------------------------------
     # VOYAGE STATISTICS
-    content.append(Spacer(1, 14)); content.append(Paragraph("VOYAGE STATISTICS", style_section))
+    # -------------------------------------------------------
+    content.append(Spacer(1, 14))
+    content.append(Paragraph("VOYAGE STATISTICS", style_section))
     content.append(Spacer(1, 8))
 
     def ts_of_max(col):
         try:
-            idx = df[col].idxmax(); dt = pd.to_datetime(df.loc[idx,"datetime"])
+            idx = df[col].idxmax()
+            dt  = pd.to_datetime(df.loc[idx,"datetime"])
             la  = df.loc[idx,"lat_raw"]; lo = df.loc[idx,"lon_raw"]
             return dt.strftime("%d/%m %H:%M"), decimal_to_deg_min(la), decimal_to_deg_min(lo,True)
-        except: return "-","-","-"
+        except:
+            return "-","-","-"
 
     sog_max = df["SOG_RMC"].max() if "SOG_RMC" in df.columns else np.nan
     sog_max_ts,_,_ = ts_of_max("SOG_RMC")
@@ -1647,24 +1546,32 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
     sog_1h_nm = np.nan; sog_1h_ts = "-"
     if not df2.empty:
         try:
-            dt_s=df2["datetime"].values.astype("int64")
-            lats_v=df2["lat_raw"].values; lons_v=df2["lon_raw"].values
-            one_h=int(3600e9); best=0.0; best_start=None; j=0
+            dt_s  = df2["datetime"].values.astype("int64")
+            lats_v= df2["lat_raw"].values; lons_v = df2["lon_raw"].values
+            one_h = int(3600e9)
+            best  = 0.0; best_start = None
+            j = 0
             for i in range(len(df2)):
-                while j < len(df2)-1 and dt_s[j+1]-dt_s[i] <= one_h: j += 1
+                while j < len(df2) - 1 and dt_s[j+1] - dt_s[i] <= one_h:
+                    j += 1
                 if j > i:
-                    sl=lats_v[i:j+1]; so=lons_v[i:j+1]
-                    vm=~(np.isnan(sl)|np.isnan(so))
-                    if vm.sum() >= 2:
-                        d=np.sum(np.where(vm[:-1]&vm[1:],
-                                          haversine_vec(sl[:-1],so[:-1],sl[1:],so[1:]),0.0))
-                        if d > best: best=d; best_start=pd.Timestamp(dt_s[i])
+                    seg_lats = lats_v[i:j+1]; seg_lons = lons_v[i:j+1]
+                    valid_m  = ~(np.isnan(seg_lats) | np.isnan(seg_lons))
+                    if valid_m.sum() >= 2:
+                        d = np.sum(np.where(
+                            valid_m[:-1] & valid_m[1:],
+                            haversine_vec(seg_lats[:-1],seg_lons[:-1],seg_lats[1:],seg_lons[1:]),
+                            0.0
+                        ))
+                        if d > best:
+                            best = d
+                            best_start = pd.Timestamp(dt_s[i])
             if best > 0:
-                sog_1h_nm=best
-                sog_1h_ts=best_start.strftime("%d/%m %H:%M") if best_start else "-"
+                sog_1h_nm = best
+                sog_1h_ts = best_start.strftime("%d/%m %H:%M") if best_start else "-"
         except: pass
 
-    tws_1h=np.nan; tws_1h_ts="-"
+    tws_1h = np.nan; tws_1h_ts = "-"
     if "TWS" in df.columns and not df.empty:
         try:
             s=df["TWS"].dropna(); roll=s.rolling(10,min_periods=5).mean()
@@ -1673,34 +1580,39 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
                 tws_1h_ts=pd.to_datetime(df.loc[idx_b,"datetime"]).strftime("%d/%m %H:%M")
         except: pass
 
-    total_nm=np.nan
+    total_nm = np.nan
     if not df2.empty:
         try:
-            lv=df2["lat_raw"].values; lnv=df2["lon_raw"].values
-            vm=~(np.isnan(lv)|np.isnan(lnv))
-            segs=np.where(vm[:-1]&vm[1:],haversine_vec(lv[:-1],lnv[:-1],lv[1:],lnv[1:]),0.0)
-            total_nm=float(np.sum(np.where(segs>1,0.0,segs)))
+            lv = df2["lat_raw"].values; lnv = df2["lon_raw"].values
+            vm = ~(np.isnan(lv) | np.isnan(lnv))
+            segs = np.where(vm[:-1]&vm[1:], haversine_vec(lv[:-1],lnv[:-1],lv[1:],lnv[1:]), 0.0)
+            total_nm = float(np.sum(np.where(segs > 1, 0.0, segs)))
         except: pass
 
     elapsed_str, avg_sog_str = compute_navigation_elapsed(df2)
+
     avg_twd_str="-"
     if "TWD" in df.columns:
         try:
             a=circ_mean(df["TWD"])
             if not np.isnan(a): avg_twd_str=f"{a:.0f}°"
         except: pass
+
     avg_tws_str="-"
     if "TWS" in df.columns:
         try:
             v=df["TWS"].dropna().mean()
             if not np.isnan(v): avg_tws_str=f"{v:.1f} kn"
         except: pass
+
     eng_h_str="-"
     if not df_events.empty and "engine_minutes" in df_events.columns:
         try:
-            em=df_events["engine_minutes"].max()
-            if not np.isnan(em): eng_h_str=engine_hhmm(em)
+            em = df_events["engine_minutes"].max()
+            if not np.isnan(em):
+                eng_h_str = engine_hhmm(em)
         except: pass
+
     heel_max_str="-"
     if "heel" in df.columns:
         try:
@@ -1716,48 +1628,61 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         except: return "—"
 
     stats_rows = [
-        ["AVG SOG (sailing)", avg_sog_str,  "AVG TWS",       avg_tws_str],
-        ["MAX SOG / 1H",      f"{sv(sog_1h_nm,'nm',1)}  @{sog_1h_ts}",
-         "MAX TWS / 1H",      f"{sv(tws_1h,'kn')}  @{tws_1h_ts}"],
-        ["MAX SOG",           f"{sv(sog_max,'kn')}  @{sog_max_ts}",
-         "MAX TWS",           f"{sv(tws_max,'kn')}  @{tws_max_ts}"],
-        ["MAX HEEL",          heel_max_str, "TOTAL DIST.",    sv(total_nm,"nm",1)],
-        ["ELAPSED (sailing)", elapsed_str,  "ENGINE HOURS",   eng_h_str],
+        ["AVG SOG (sailing)",  avg_sog_str,
+         "AVG TWS",            avg_tws_str],
+        ["MAX SOG / 1H",       f"{sv(sog_1h_nm,'nm',1)}  @{sog_1h_ts}",
+         "MAX TWS / 1H",       f"{sv(tws_1h,'kn')}  @{tws_1h_ts}"],
+        ["MAX SOG",            f"{sv(sog_max,'kn')}  @{sog_max_ts}",
+         "MAX TWS",            f"{sv(tws_max,'kn')}  @{tws_max_ts}"],
+        ["MAX HEEL",           heel_max_str,
+         "TOTAL DIST.",        sv(total_nm,"nm",1)],
+        ["ELAPSED (sailing)",  elapsed_str,
+         "ENGINE HOURS",       eng_h_str],
     ]
-    style_sl = ParagraphStyle("SL",parent=styles["Normal"],fontSize=7,
-                               textColor=colors.white,fontName="Helvetica-Bold")
-    style_sv = ParagraphStyle("SV",parent=styles["Normal"],fontSize=8)
+
+    style_sl = ParagraphStyle("SL", parent=styles["Normal"], fontSize=7,
+                               textColor=colors.white, fontName="Helvetica-Bold")
+    style_sv = ParagraphStyle("SV", parent=styles["Normal"], fontSize=8)
+
     stat_display = [
-        [Paragraph(r[0],style_sl),Paragraph(str(r[1]),style_sv),
-         Paragraph(r[2],style_sl),Paragraph(str(r[3]),style_sv)]
+        [Paragraph(r[0],style_sl), Paragraph(str(r[1]),style_sv),
+         Paragraph(r[2],style_sl), Paragraph(str(r[3]),style_sv)]
         for r in stats_rows
     ]
-    ELAPSED_ROW=len(stats_rows)-1
-    RED_VAL=colors.HexColor("#f5c6cb"); RED_LBL=colors.HexColor("#c0392b")
+
+    ELAPSED_ROW = len(stats_rows) - 1
+    RED_VAL = colors.HexColor("#f5c6cb")
+    RED_LBL = colors.HexColor("#c0392b")
+
     stat_style_list = [
-        ("BACKGROUND",(0,0),(-1,-1),colors.HexColor("#f4f7fb")),
-        ("BACKGROUND",(0,0),(0,-1), HEADER_COLOR),("BACKGROUND",(2,0),(2,-1),HEADER_COLOR),
-        ("FONTNAME",(0,0),(-1,-1),"Helvetica"),("FONTSIZE",(0,0),(-1,-1),8),
-        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),("GRID",(0,0),(-1,-1),0.4,colors.HexColor("#c0cfe0")),
-        ("LEFTPADDING",(0,0),(-1,-1),6),("RIGHTPADDING",(0,0),(-1,-1),6),
-        ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5),
+        ("BACKGROUND",  (0,0),(-1,-1), colors.HexColor("#f4f7fb")),
+        ("BACKGROUND",  (0,0),(0,-1),  HEADER_COLOR),
+        ("BACKGROUND",  (2,0),(2,-1),  HEADER_COLOR),
+        ("FONTNAME",    (0,0),(-1,-1), "Helvetica"),
+        ("FONTSIZE",    (0,0),(-1,-1), 8),
+        ("VALIGN",      (0,0),(-1,-1), "MIDDLE"),
+        ("GRID",        (0,0),(-1,-1), 0.4, colors.HexColor("#c0cfe0")),
+        ("LEFTPADDING", (0,0),(-1,-1), 6), ("RIGHTPADDING",(0,0),(-1,-1),6),
+        ("TOPPADDING",  (0,0),(-1,-1), 5), ("BOTTOMPADDING",(0,0),(-1,-1),5),
         *[("BACKGROUND",(1,i),(1,i),colors.HexColor("#eaf0f8"))
           for i in range(0,len(stats_rows),2) if i!=ELAPSED_ROW],
         *[("BACKGROUND",(3,i),(3,i),colors.HexColor("#eaf0f8"))
           for i in range(0,len(stats_rows),2) if i!=ELAPSED_ROW],
-        ("BACKGROUND",(0,ELAPSED_ROW),(0,ELAPSED_ROW),RED_LBL),
-        ("BACKGROUND",(1,ELAPSED_ROW),(1,ELAPSED_ROW),RED_VAL),
-        ("BACKGROUND",(2,ELAPSED_ROW),(2,ELAPSED_ROW),RED_LBL),
-        ("BACKGROUND",(3,ELAPSED_ROW),(3,ELAPSED_ROW),RED_VAL),
+        ("BACKGROUND",  (0,ELAPSED_ROW),(0,ELAPSED_ROW), RED_LBL),
+        ("BACKGROUND",  (1,ELAPSED_ROW),(1,ELAPSED_ROW), RED_VAL),
+        ("BACKGROUND",  (2,ELAPSED_ROW),(2,ELAPSED_ROW), RED_LBL),
+        ("BACKGROUND",  (3,ELAPSED_ROW),(3,ELAPSED_ROW), RED_VAL),
     ]
     ts_tbl = Table(stat_display, colWidths=[4.5*cm,9.0*cm,4.5*cm,9.0*cm])
     ts_tbl.setStyle(TableStyle(stat_style_list))
-    content.append(ts_tbl); content.append(Spacer(1, 16))
+    content.append(ts_tbl)
+    content.append(Spacer(1, 16))
 
     map_img = build_track_map(df, meta)
     if map_img is not None:
         content.append(Paragraph("TRACK CHART", style_section))
-        content.append(Spacer(1, 4)); content.append(map_img)
+        content.append(Spacer(1, 4))
+        content.append(map_img)
 
     doc.build(content)
     print("PDF generated:", out_pdf)
@@ -1821,13 +1746,3 @@ for log_dir_name in os.listdir(base_folder):
     print("  CSV  :", out_csv)
 
     generate_pdf(df, df_events, meta, out_pdf, in_progress=in_progress)
-
-    # Bio sampling Excel sheet
-    if os.path.exists(BIO_TEMPLATE_PATH):
-        out_bio = os.path.join(log_dir, base + "_bio_sampling.xlsx")
-        try:
-            generate_bio_xlsx(df_events, BIO_TEMPLATE_PATH, out_bio)
-        except Exception as e:
-            print(f"  [WARN] bio xlsx: {e}")
-    else:
-        print(f"  [INFO] Bio template not found at {BIO_TEMPLATE_PATH} — skipped")
