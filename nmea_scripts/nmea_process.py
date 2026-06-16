@@ -7,6 +7,8 @@ import gzip
 import io
 import math
 
+from process_science import run_science_export
+
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer,
     Table, TableStyle, Image,
@@ -1746,3 +1748,5 @@ for log_dir_name in os.listdir(base_folder):
     print("  CSV  :", out_csv)
 
     generate_pdf(df, df_events, meta, out_pdf, in_progress=in_progress)
+    
+    run_science_export(df, df_events, meta, log_dir, base)
