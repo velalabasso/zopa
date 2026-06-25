@@ -10,13 +10,15 @@ Intégration dans nmea_process.py :
          run_science_export(df, df_events, meta, log_dir, base)
 
 Sortie : <log_dir>/<base>_science.xlsx
-  Toutes les lignes dans un seul fichier :
-    - 1 ligne HYP par jour (HYPERNET ON → OFF)
-    - 1 ligne NET + 1 ligne BUCKET par event NET ON/OFF
-      (BUCKET = event OTHER/BUCKET le plus proche dans la fenêtre NET)
+
+Lignes produites :
+  - 1 ligne HYP par paire STATION HYP ON → OFF  (avec turbidity et secchi si présents)
+  - 1 ligne BIO par paire FILTRATION ON → OFF    (avec planctospace, size, volume)
+  - 1 ligne BUCKET par event BUCKET dans la fenêtre de la station BIO active
 """
 
 import os
+import re
 import math
 import numpy as np
 import pandas as pd
@@ -25,18 +27,10 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 # ─────────────────────────────────────────────────────────────────────────────
-# COMPTEURS GLOBAUX (persistants entre legs dans la même exécution)
-# ─────────────────────────────────────────────────────────────────────────────
-_HYP_COUNTER = 0
-_BIO_COUNTER = 0
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # TIMESTAMP  — tz-safe
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _to_ns(ts) -> int:
-    """Timestamp quelconque → int64 ns UTC naïf."""
     try:
         t = pd.Timestamp(ts)
         if t.tzinfo is not None:
@@ -47,10 +41,6 @@ def _to_ns(ts) -> int:
 
 
 def _normalize_events(df_events):
-    """
-    Normalise la colonne timestamp en naive UTC datetime64[ns].
-    nmea_process produit un mélange tz-aware / tz-naive → sort_values() planterait.
-    """
     if df_events.empty or "timestamp" not in df_events.columns:
         return df_events
     df = df_events.copy()
@@ -93,7 +83,6 @@ def _fmt8(v): return _fmt(v, 8)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _decimal_to_dms(decimal: float, is_lon: bool = False) -> str:
-    """Décimal → °MM,SSSS'N/S/E/W (virgule, Google Sheets FR)."""
     if decimal is None or (isinstance(decimal, float) and math.isnan(decimal)):
         return ""
     direction = ("E" if decimal >= 0 else "W") if is_lon else ("N" if decimal >= 0 else "S")
@@ -158,6 +147,108 @@ def _mean_sog(ts_ns_arr, sog_arr, t0, t1) -> float:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CONSTANTES BIO
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MOUTH_DIAM_LAMPREY = "6"   # cm — Lamprey filtrations
+_DEPTH_BIO          = "1"   # m  — toutes stations BIO (lamprey + bucket)
+
+_SIZE_RANGE = {
+    "micro": ("50",  "200"),
+    "nano":  ("5",   "50"),
+    "pico":  ("0,3", "5"),
+}
+
+def _size_min_max(size: str):
+    """Retourne (size_min, size_max) pour micro/nano/pico, sinon ("", "")."""
+    return _SIZE_RANGE.get(size.lower().strip(), ("", ""))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PARSE DES DÉTAILS D'EVENTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_filtration_off(detail: str) -> dict:
+    """
+    Parse : ' OFF | STATION Vela_Lab_bio_st01 | SIZE MICRO | VOLUME 500,0 mL
+              | SATURATION NO | PLANCTOSPACE st06-03'
+    Retourne dict avec keys: size, volume_ml, saturation, planctospace
+    """
+    result = {"size": "", "volume_ml": "", "saturation": "", "planctospace": ""}
+    for part in detail.split("|"):
+        part = part.strip()
+        if part.upper().startswith("SIZE"):
+            result["size"] = part.split(None, 1)[-1].strip().lower()
+        elif part.upper().startswith("VOLUME"):
+            m = re.search(r"([\d,\.]+)", part)
+            if m:
+                result["volume_ml"] = m.group(1).replace(".", ",")
+        elif part.upper().startswith("SATURATION"):
+            result["saturation"] = part.split(None, 1)[-1].strip()
+        elif part.upper().startswith("PLANCTOSPACE"):
+            ps = part.split(None, 1)[-1].strip()
+            # Garder uniquement XX de st06-XX
+            m = re.search(r"(?:st\d+-)?(\w+)$", ps, re.IGNORECASE)
+            result["planctospace"] = m.group(1) if m else ps
+    return result
+
+
+def _parse_filtration_on(detail: str) -> dict:
+    """
+    Parse : ' ON | STATION Vela_Lab_bio_st01 | SIZE MICRO'
+    """
+    result = {"size": ""}
+    for part in detail.split("|"):
+        part = part.strip()
+        if part.upper().startswith("SIZE"):
+            result["size"] = part.split(None, 1)[-1].strip().lower()
+    return result
+
+
+def _parse_turbidity(detail: str) -> dict:
+    """
+    Parse : ' | STATION Vela_Lab_hyp_st001 | T1=0,1234 | T2=0,5678 | T3=0,9012'
+    Retourne dict t1, t2, t3
+    """
+    result = {"t1": "", "t2": "", "t3": ""}
+    for part in detail.split("|"):
+        part = part.strip()
+        ul = part.upper()
+        if ul.startswith("T1="):
+            result["t1"] = part[3:].replace(".", ",")
+        elif ul.startswith("T2="):
+            result["t2"] = part[3:].replace(".", ",")
+        elif ul.startswith("T3="):
+            result["t3"] = part[3:].replace(".", ",")
+    return result
+
+
+def _parse_secchi(detail: str) -> str:
+    """
+    Parse : ' | STATION Vela_Lab_hyp_st001 | DEPTH 12,50 m'
+    Retourne la valeur de profondeur.
+    """
+    for part in detail.split("|"):
+        part = part.strip()
+        if part.upper().startswith("DEPTH"):
+            m = re.search(r"([\d,\.]+)", part)
+            if m:
+                return m.group(1).replace(".", ",")
+    return ""
+
+
+def _station_id_from_detail(detail: str, prefix: str) -> str:
+    """
+    Extrait 'Vela_Lab_bio_st01' ou 'Vela_Lab_hyp_st001' d'un detail d'event.
+    prefix = 'bio' ou 'hyp'
+    """
+    m = re.search(rf"Vela_Lab_{prefix}_st(\S+)", detail, re.IGNORECASE)
+    if m:
+        return f"Vela_Lab_{prefix}_st{m.group(1)}"
+    return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # COLONNES
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -177,11 +268,11 @@ COLUMNS = [
     ("lon_end_dms",     "End",                   "lon_end (°E)",                   "auto"),
     ("lat_end_dec",     "End",                   "lat_end (decimal °N)",           "auto"),
     ("lon_end_dec",     "End",                   "lon_end (decimal °E)",           "auto"),
-    ("device",          "End",                   "device",                         "manual"),
-    ("mouth_diam",      "End",                   "mouth_Ø (cm)",                   "manual"),
-    ("depth",           "Depth",                 "depth (m)",                      "manual"),
-    ("size_min",        "Depth",                 "size_min (um)",                  "manual"),
-    ("size_max",        "Comments",              "size_max (um)",                  "manual"),
+    ("device",          "End",                   "device",                         "auto"),
+    ("mouth_diam",      "End",                   "mouth_Ø (cm)",                   "auto"),
+    ("depth",           "Depth",                 "depth (m)",                      "auto"),
+    ("size_min",        "Depth",                 "size_min (um)",                  "auto"),
+    ("size_max",        "Comments",              "size_max (um)",                  "auto"),
     ("comment",         "Comments",              "comment about the sampling",     "manual"),
     ("duration_min",    "Duration & Distance",   "duration (min)",                 "auto"),
     ("dist_km",         "Duration & Distance",   "distance (km) Haversine",        "auto"),
@@ -190,13 +281,13 @@ COLUMNS = [
     ("surface_mouth",   "Volume",                "surface mouth (m²)",             "formula"),
     ("vol_net",         "Volume",                "vol_net theoric (m³)",           "formula"),
     ("vol_net_conc",    "Volume",                "vol_net_conc (ml)",              "manual"),
-    ("planktospace_st", "PlanktoSpace station",  "PlanktoSpace station",           "manual"),
+    ("planktospace_st", "PlanktoSpace station",  "PlanktoSpace station",           "auto"),
     ("barcode",         "PlanktoSpace station",  "barcode",                        "manual"),
-    ("vol_lamprey",     "Lamprey analysis",      "vol_lamprey (ml)",               "manual"),
-    ("time_filt_start", "Lamprey analysis",      "time_filtration_start (UTC)",    "manual"),
-    ("time_filt_end",   "Lamprey analysis",      "time_filtration_end (UTC)",      "manual"),
-    ("saturation",      "Lamprey analysis",      "saturation (Y/N)",               "manual"),
-    ("vol_lamprey_fil", "Lamprey analysis",      "vol_lamprey_filtrate (ml)",      "manual"),
+    ("vol_lamprey",     "Lamprey analysis",      "size (micro/nano/pico)",         "auto"),
+    ("time_filt_start", "Lamprey analysis",      "time_filtration_start (UTC)",    "auto"),
+    ("time_filt_end",   "Lamprey analysis",      "time_filtration_end (UTC)",      "auto"),
+    ("saturation",      "Lamprey analysis",      "saturation (Y/N)",               "auto"),
+    ("vol_lamprey_fil", "Lamprey analysis",      "vol_lamprey_filtrate (ml)",      "auto"),
     ("vol_curiosity",   "QCuriosity analysis",   "vol_curiosity (ml)",             "manual"),
     ("conc_dil",        "QCuriosity analysis",   "conc_or_dilution",               "manual"),
     ("nb_images",       "QCuriosity analysis",   "nb_images",                      "manual"),
@@ -208,11 +299,11 @@ COLUMNS = [
     ("vol_imaged",      "Planktoscope analysis", "vol_imaged (ml)",                "manual"),
     ("acq_imaged_vol",  "Planktoscope analysis", "acq_imaged_volume (ml)",         "manual"),
     ("conc_filet",      "Planktoscope analysis", "conc_filet (m³/organisme)",      "manual"),
-    ("time_turbi",      "Turbidometre",          "time_turbi (UTC HH:MM:SS)",      "manual"),
-    ("turbi_1",         "Turbidometre",          "turbi_1",                        "manual"),
-    ("turbi_2",         "Turbidometre",          "turbi_2",                        "manual"),
-    ("turbi_3",         "Turbidometre",          "turbi_3",                        "manual"),
-    ("secchi",          "Secchi Disk",           "Secchi Disk",                    "manual"),
+    ("time_turbi",      "Turbidometre",          "time_turbi (UTC HH:MM:SS)",      "auto"),
+    ("turbi_1",         "Turbidometre",          "turbi_1",                        "auto"),
+    ("turbi_2",         "Turbidometre",          "turbi_2",                        "auto"),
+    ("turbi_3",         "Turbidometre",          "turbi_3",                        "auto"),
+    ("secchi",          "Secchi Disk",           "Secchi Disk",                    "auto"),
 ]
 
 
@@ -304,9 +395,9 @@ def _write_xlsx(rows: list, out_path: str, leg_label: str):
     # Légende
     lr = 3 + len(rows) + 2
     for i, (color, label) in enumerate([
-        (_GREEN_PALE, "Rempli automatiquement depuis NMEA"),
+        (_GREEN_PALE, "Rempli automatiquement depuis NMEA / events"),
         (_YELLOW,     "Calculé par formule Excel (saisir le Ø filet pour activer)"),
-        (_ORANGE,     "Ligne Bucket (position = début du NET de la même station)"),
+        (_ORANGE,     "Ligne Bucket (position = moment du bucket)"),
         (_WHITE,      "À remplir manuellement après la mesure"),
     ]):
         c = ws.cell(row=lr+i, column=1, value=label)
@@ -332,6 +423,10 @@ def _write_xlsx(rows: list, out_path: str, leg_label: str):
         "duration_min":11,"dist_km":16,
         "sog_haversine":13,"sog_nmea":13,
         "surface_mouth":14,"vol_net":18,
+        "planktospace_st":18,
+        "vol_lamprey":14,"time_filt_start":16,"time_filt_end":16,
+        "saturation":10,"vol_lamprey_fil":16,
+        "time_turbi":16,"turbi_1":10,"turbi_2":10,"turbi_3":10,"secchi":10,
     }
     for i, (key,*_) in enumerate(COLUMNS):
         ws.column_dimensions[get_column_letter(i+1)].width = widths.get(key, 11)
@@ -343,42 +438,53 @@ def _write_xlsx(rows: list, out_path: str, leg_label: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EXTRACTION HYPERNET  (1 ligne par jour)
+# EXTRACTION HYP  (1 ligne par paire STATION HYP ON → OFF)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_hyp(ev, ts_ns_arr, lat_arr, lon_arr, sog_arr, has_nmea):
-    global _HYP_COUNTER
+    """
+    1 ligne par paire STATION_HYP ON → OFF.
+    Turbidity et Secchi sont attachés à la station active au moment de l'event.
+    """
+    rows = []
 
-    hyp = ev[ev["event_type"] == "HYPERNET"].reset_index(drop=True)
-    if hyp.empty:
+    # Filtrer les events HYP, TURBIDITY, SECCHI
+    hyp_ev    = ev[ev["event_type"] == "STATION_HYP"].reset_index(drop=True)
+    turbi_ev  = ev[ev["event_type"] == "TURBIDITY"].reset_index(drop=True)
+    secchi_ev = ev[ev["event_type"] == "SECCHI"].reset_index(drop=True)
+
+    if hyp_ev.empty:
         return []
 
-    # Regroupe par jour : premier ON → dernier OFF
-    day_map = {}
-    open_ns = open_ts = None
-    for _, row in hyp.iterrows():
-        detail = str(row["event_detail"]).strip().upper()
-        t_ns   = _to_ns(row["timestamp"])
-        ts     = pd.Timestamp(t_ns)
-        day    = ts.date()
-        if detail == "ON":
-            if day not in day_map:
-                day_map[day] = {"on_ns": t_ns, "on_ts": ts, "off_ns": None, "off_ts": None}
-            open_ns, open_ts = t_ns, ts
-        elif detail == "OFF" and open_ns is not None:
-            if day in day_map:
-                day_map[day]["off_ns"] = t_ns
-                day_map[day]["off_ts"] = ts
-            open_ns = None
+    # Construire les sessions HYP : ON → OFF
+    sessions = []
+    open_row  = None
 
-    rows = []
-    for day in sorted(day_map):
-        d = day_map[day]
-        if d["off_ns"] is None:
-            continue
-        _HYP_COUNTER += 1
-        t0, t1 = d["on_ns"], d["off_ns"]
-        ts_s, ts_e = d["on_ts"], d["off_ts"]
+    for _, row in hyp_ev.iterrows():
+        detail = str(row["event_detail"]).strip().upper()
+        if "ON" in detail:
+            open_row = row
+        elif "OFF" in detail and open_row is not None:
+            # Extraire le nom de station depuis le detail du ON
+            station_name = _station_id_from_detail(str(open_row["event_detail"]), "hyp")
+            if not station_name:
+                # Fallback sur hyp_station du dataframe
+                station_name = str(open_row.get("hyp_station", "")) or "?"
+
+            sessions.append({
+                "station_id":   station_name,
+                "on_row":       open_row,
+                "off_row":      row,
+                "on_ts":        pd.Timestamp(_to_ns(open_row["timestamp"])),
+                "off_ts":       pd.Timestamp(_to_ns(row["timestamp"])),
+                "on_ns":        _to_ns(open_row["timestamp"]),
+                "off_ns":       _to_ns(row["timestamp"]),
+            })
+            open_row = None
+
+    for s in sessions:
+        t0, t1 = s["on_ns"], s["off_ns"]
+        ts_s, ts_e = s["on_ts"], s["off_ts"]
         dur = (t1 - t0) / 1e9 / 60.0
 
         if has_nmea:
@@ -388,12 +494,37 @@ def _extract_hyp(ev, ts_ns_arr, lat_arr, lon_arr, sog_arr, has_nmea):
         else:
             lat_s = lon_s = lat_e = lon_e = sog_m = np.nan
 
-        dist = _haversine_km(lat_s, lon_s, lat_e, lon_e) if has_nmea and not any(
-            math.isnan(x) for x in [lat_s, lon_s, lat_e, lon_e]) else np.nan
-        sog_h = dist / 1.852 / (dur / 60.0) if not math.isnan(dist) and dur > 0 else np.nan
+        dist  = (_haversine_km(lat_s, lon_s, lat_e, lon_e)
+                 if has_nmea and not any(math.isnan(x) for x in [lat_s, lon_s, lat_e, lon_e])
+                 else np.nan)
+        sog_h = (dist / 1.852 / (dur / 60.0)
+                 if not math.isnan(dist) and dur > 0 else np.nan)
+
+        # Turbidity dans la fenêtre de la station
+        turbi_in = turbi_ev[
+            (turbi_ev["timestamp"] >= ts_s) &
+            (turbi_ev["timestamp"] <= ts_e + pd.Timedelta(hours=2))
+        ]
+        turbi_t1 = turbi_t2 = turbi_t3 = turbi_time = ""
+        if not turbi_in.empty:
+            tr = turbi_in.iloc[0]
+            parsed = _parse_turbidity(str(tr["event_detail"]))
+            turbi_t1   = parsed["t1"]
+            turbi_t2   = parsed["t2"]
+            turbi_t3   = parsed["t3"]
+            turbi_time = pd.Timestamp(_to_ns(tr["timestamp"])).strftime("%H:%M:%S")
+
+        # Secchi dans la fenêtre de la station
+        secchi_in = secchi_ev[
+            (secchi_ev["timestamp"] >= ts_s) &
+            (secchi_ev["timestamp"] <= ts_e + pd.Timedelta(hours=2))
+        ]
+        secchi_val = ""
+        if not secchi_in.empty:
+            secchi_val = _parse_secchi(str(secchi_in.iloc[0]["event_detail"]))
 
         rows.append({
-            "station_id":    f"Vela_Lab_hyp_st{_HYP_COUNTER:02d}",
+            "station_id":    s["station_id"],
             "station_type":  "hyp",
             "date_start":    ts_s.strftime("%Y-%m-%d"),
             "time_start":    ts_s.strftime("%H:%M:%S"),
@@ -411,113 +542,187 @@ def _extract_hyp(ev, ts_ns_arr, lat_arr, lon_arr, sog_arr, has_nmea):
             "dist_km":       _fmt6(dist),
             "sog_haversine": _fmt4(sog_h),
             "sog_nmea":      _fmt4(sog_m),
+            "time_turbi":    turbi_time,
+            "turbi_1":       turbi_t1,
+            "turbi_2":       turbi_t2,
+            "turbi_3":       turbi_t3,
+            "secchi":        secchi_val,
         })
+
     return rows
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EXTRACTION BIO  (NET + BUCKET)
+# EXTRACTION BIO  (1 ligne par FILTRATION + lignes BUCKET)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_bio(ev, ts_ns_arr, lat_arr, lon_arr, sog_arr, has_nmea):
-    global _BIO_COUNTER
+    """
+    - 1 ligne par paire STATION_BIO ON → OFF  (= 1 station)
+      Pour chaque station :
+        - 1 ligne par paire FILTRATION ON → OFF (avec size, volume, planctospace)
+        - 1 ligne par event BUCKET dans la fenêtre de la station
+    """
+    rows = []
 
-    net_ev = ev[ev["event_type"] == "NET"].reset_index(drop=True)
-    if net_ev.empty:
+    bio_ev    = ev[ev["event_type"] == "STATION_BIO"].reset_index(drop=True)
+    filt_ev   = ev[ev["event_type"] == "FILTRATION"].reset_index(drop=True)
+    bucket_ev = ev[ev["event_type"] == "BUCKET"].reset_index(drop=True)
+
+    if bio_ev.empty:
         return []
 
-    # Tous les events BUCKET (OTHER avec detail contenant "BUCKET")
-    bucket_ev = ev[
-        (ev["event_type"] == "OTHER") &
-        (ev["event_detail"].astype(str).str.upper().str.strip() == "BUCKET")
-    ].reset_index(drop=True)
+    # Construire les sessions BIO : ON → OFF
+    sessions = []
+    open_row  = None
 
-    rows = []
-    open_ns = open_ts = None
-
-    for _, row in net_ev.iterrows():
+    for _, row in bio_ev.iterrows():
         detail = str(row["event_detail"]).strip().upper()
-        t_ns   = _to_ns(row["timestamp"])
-        ts     = pd.Timestamp(t_ns)
+        if "ON" in detail:
+            open_row = row
+        elif "OFF" in detail and open_row is not None:
+            station_name = _station_id_from_detail(str(open_row["event_detail"]), "bio")
+            if not station_name:
+                station_name = str(open_row.get("bio_station", "")) or "?"
 
-        if detail == "ON":
-            open_ns, open_ts = t_ns, ts
+            sessions.append({
+                "station_id": station_name,
+                "on_ts":      pd.Timestamp(_to_ns(open_row["timestamp"])),
+                "off_ts":     pd.Timestamp(_to_ns(row["timestamp"])),
+                "on_ns":      _to_ns(open_row["timestamp"]),
+                "off_ns":     _to_ns(row["timestamp"]),
+            })
+            open_row = None
 
-        elif detail == "OFF" and open_ns is not None:
-            _BIO_COUNTER += 1
-            t0, t1 = open_ns, t_ns
-            ts_s, ts_e = open_ts, ts
-            open_ns = None
-            dur = (t1 - t0) / 1e9 / 60.0
+    filt_counter = {}  # station_id → sub-index for filtrations
+
+    for s in sessions:
+        t0_st, t1_st = s["on_ns"], s["off_ns"]
+        ts_s_st = s["on_ts"]
+        station_name = s["station_id"]
+
+        if station_name not in filt_counter:
+            filt_counter[station_name] = 0
+
+        # ── Filtrations dans la fenêtre de la station ──────────────────────
+        filts_in = filt_ev[
+            (filt_ev["timestamp"] >= s["on_ts"]) &
+            (filt_ev["timestamp"] <= s["off_ts"] + pd.Timedelta(hours=1))
+        ].reset_index(drop=True)
+
+        filt_open_ns = filt_open_ts = None
+        filt_size_on  = ""
+
+        def _add_filtration_row(t0, t1, ts_s, ts_e, filt_size, parsed_off):
+            nonlocal rows
+            filt_counter[station_name] += 1
+            sub = filt_counter[station_name]
 
             if has_nmea:
-                lat_s, lon_s, _ = _interp(ts_ns_arr, lat_arr, lon_arr, sog_arr, t0)
-                lat_e, lon_e, _ = _interp(ts_ns_arr, lat_arr, lon_arr, sog_arr, t1)
-                sog_m            = _mean_sog(ts_ns_arr, sog_arr, t0, t1)
+                la_s, lo_s, _ = _interp(ts_ns_arr, lat_arr, lon_arr, sog_arr, t0)
+                la_e, lo_e, _ = _interp(ts_ns_arr, lat_arr, lon_arr, sog_arr, t1)
+                sog_m          = _mean_sog(ts_ns_arr, sog_arr, t0, t1)
             else:
-                lat_s = lon_s = lat_e = lon_e = sog_m = np.nan
+                la_s = lo_s = la_e = lo_e = sog_m = np.nan
 
-            dist = _haversine_km(lat_s, lon_s, lat_e, lon_e) if has_nmea and not any(
-                math.isnan(x) for x in [lat_s, lon_s, lat_e, lon_e]) else np.nan
-            sog_h = dist / 1.852 / (dur / 60.0) if not math.isnan(dist) and dur > 0 else np.nan
+            dur  = (t1 - t0) / 1e9 / 60.0
+            dist = (_haversine_km(la_s, lo_s, la_e, lo_e)
+                    if has_nmea and not any(math.isnan(x) for x in [la_s, lo_s, la_e, lo_e])
+                    else np.nan)
+            sog_h = (dist / 1.852 / (dur / 60.0)
+                     if not math.isnan(dist) and dur > 0 else np.nan)
 
-            base = f"Vela_Lab_bio_st{_BIO_COUNTER:02d}"
+            size = filt_size or parsed_off.get("size", "")
+            s_min, s_max = _size_min_max(size)
 
-            # ── Ligne filet (NET) ──────────────────────────────────────────
             rows.append({
-                "station_id":    f"{base}_1",
+                "station_id":    f"{station_name}_filt{sub}",
                 "station_type":  "bio",
                 "date_start":    ts_s.strftime("%Y-%m-%d"),
                 "time_start":    ts_s.strftime("%H:%M:%S"),
                 "date_end":      ts_e.strftime("%Y-%m-%d"),
                 "time_end":      ts_e.strftime("%H:%M:%S"),
-                "lat_start_dms": _decimal_to_dms(lat_s),
-                "lon_start_dms": _decimal_to_dms(lon_s, True),
-                "lat_start_dec": _fmt8(lat_s),
-                "lon_start_dec": _fmt8(lon_s),
-                "lat_end_dms":   _decimal_to_dms(lat_e),
-                "lon_end_dms":   _decimal_to_dms(lon_e, True),
-                "lat_end_dec":   _fmt8(lat_e),
-                "lon_end_dec":   _fmt8(lon_e),
-                "device":        "Coryphaena",
-                "mouth_diam":    "6",
-                "depth":         "1",
-                "size_min":      "50",
-                "size_max":      "200",
+                "lat_start_dms": _decimal_to_dms(la_s),
+                "lon_start_dms": _decimal_to_dms(lo_s, True),
+                "lat_start_dec": _fmt8(la_s),
+                "lon_start_dec": _fmt8(lo_s),
+                "lat_end_dms":   _decimal_to_dms(la_e),
+                "lon_end_dms":   _decimal_to_dms(la_e, True),
+                "lat_end_dec":   _fmt8(la_e),
+                "lon_end_dec":   _fmt8(lo_e),
+                "device":        "Lamprey",
+                "mouth_diam":    _MOUTH_DIAM_LAMPREY,
+                "depth":         _DEPTH_BIO,
+                "size_min":      s_min,
+                "size_max":      s_max,
                 "duration_min":  _fmt2(dur),
                 "dist_km":       _fmt6(dist),
                 "sog_haversine": _fmt4(sog_h),
                 "sog_nmea":      _fmt4(sog_m),
+                # Lamprey analysis
+                "vol_lamprey":      size,          # size (micro/nano/pico) — renommé
+                "time_filt_start":  ts_s.strftime("%H:%M:%S"),
+                "time_filt_end":    ts_e.strftime("%H:%M:%S"),
+                "saturation":       parsed_off.get("saturation", ""),
+                "vol_lamprey_fil":  parsed_off.get("volume_ml", ""),
+                # PlanktoSpace
+                "planktospace_st":  parsed_off.get("planctospace", ""),
             })
 
-            # ── Lignes BUCKET : un par event OTHER/BUCKET dans la fenêtre NET ──
-            buckets_in_window = bucket_ev[
-                (bucket_ev["timestamp"] >= ts_s) &
-                (bucket_ev["timestamp"] <= ts_e + pd.Timedelta(hours=2))
-            ].reset_index(drop=True)
+        for _, frow in filts_in.iterrows():
+            detail = str(frow["event_detail"]).strip()
+            t_ns   = _to_ns(frow["timestamp"])
+            ts     = pd.Timestamp(t_ns)
 
-            for b_idx, b_row in buckets_in_window.iterrows():
-                b_ns = _to_ns(b_row["timestamp"])
-                b_ts = pd.Timestamp(b_ns)
-                if has_nmea:
-                    b_lat, b_lon, b_sog = _interp(ts_ns_arr, lat_arr, lon_arr, sog_arr, b_ns)
-                else:
-                    b_lat = b_lon = b_sog = np.nan
+            if detail.upper().startswith("ON") or "| SIZE" in detail.upper():
+                # Peut être " ON | STATION ... | SIZE MICRO"
+                if "OFF" not in detail.upper():
+                    filt_open_ns  = t_ns
+                    filt_open_ts  = ts
+                    parsed_on     = _parse_filtration_on(detail)
+                    filt_size_on  = parsed_on["size"]
 
-                rows.append({
-                    "station_id":    f"{base}_{b_idx + 2}",
-                    "station_type":  "bio",
-                    "date_start":    b_ts.strftime("%Y-%m-%d"),
-                    "time_start":    b_ts.strftime("%H:%M:%S"),
-                    "lat_start_dms": _decimal_to_dms(b_lat),
-                    "lon_start_dms": _decimal_to_dms(b_lon, True),
-                    "lat_start_dec": _fmt8(b_lat),
-                    "lon_start_dec": _fmt8(b_lon),
-                    "device":        f"Bucket {b_idx + 1}",
-                    "depth":         "0,3",
-                    "sog_nmea":      _fmt4(b_sog),
-                    "_row_bg":       _ORANGE,
-                })
+            if "OFF" in detail.upper() and filt_open_ns is not None:
+                parsed_off = _parse_filtration_off(detail)
+                # Si size pas dans le OFF, utiliser celui du ON
+                if not parsed_off["size"]:
+                    parsed_off["size"] = filt_size_on
+                _add_filtration_row(
+                    filt_open_ns, t_ns,
+                    filt_open_ts, ts,
+                    filt_size_on, parsed_off
+                )
+                filt_open_ns = filt_open_ts = None
+                filt_size_on = ""
+
+        # ── Buckets dans la fenêtre de la station ──────────────────────────
+        buckets_in = bucket_ev[
+            (bucket_ev["timestamp"] >= s["on_ts"]) &
+            (bucket_ev["timestamp"] <= s["off_ts"] + pd.Timedelta(hours=2))
+        ].reset_index(drop=True)
+
+        for b_idx, b_row in buckets_in.iterrows():
+            b_ns = _to_ns(b_row["timestamp"])
+            b_ts = pd.Timestamp(b_ns)
+            if has_nmea:
+                b_lat, b_lon, b_sog = _interp(ts_ns_arr, lat_arr, lon_arr, sog_arr, b_ns)
+            else:
+                b_lat = b_lon = b_sog = np.nan
+
+            rows.append({
+                "station_id":    f"{station_name}_bucket{b_idx + 1}",
+                "station_type":  "bio",
+                "date_start":    b_ts.strftime("%Y-%m-%d"),
+                "time_start":    b_ts.strftime("%H:%M:%S"),
+                "lat_start_dms": _decimal_to_dms(b_lat),
+                "lon_start_dms": _decimal_to_dms(b_lon, True),
+                "lat_start_dec": _fmt8(b_lat),
+                "lon_start_dec": _fmt8(b_lon),
+                "device":        f"Bucket {b_idx + 1}",
+                "depth":         _DEPTH_BIO,
+                "sog_nmea":      _fmt4(b_sog),
+                "_row_bg":       _ORANGE,
+            })
 
     return rows
 
@@ -532,7 +737,6 @@ def run_science_export(df, df_events, meta, log_dir: str, base: str):
     leg_label   = f"{departure} → {destination}"
     print(f"  [SCIENCE] Export science — {leg_label}")
 
-    # Normalise df_events (mélange tz-aware/tz-naive → naive UTC)
     ev = _normalize_events(df_events)
     if ev.empty or "event_type" not in ev.columns:
         print("  [SCIENCE] Aucun événement trouvé.")
@@ -547,21 +751,20 @@ def run_science_export(df, df_events, meta, log_dir: str, base: str):
         df_nmea = df_nmea.sort_values("datetime").reset_index(drop=True)
     ts_ns_arr, lat_arr, lon_arr, sog_arr, has_nmea = _build_nmea_arrays(df_nmea)
 
-    # Extrait les lignes
     hyp_rows = _extract_hyp(ev, ts_ns_arr, lat_arr, lon_arr, sog_arr, has_nmea)
     bio_rows = _extract_bio(ev, ts_ns_arr, lat_arr, lon_arr, sog_arr, has_nmea)
 
     all_rows = hyp_rows + bio_rows
 
     if not all_rows:
-        print("  [SCIENCE] Aucune session HYPERNET ou NET détectée.")
+        print("  [SCIENCE] Aucune station BIO ou HYP détectée.")
         return
 
     out_path = os.path.join(log_dir, base + "_science.xlsx")
     _write_xlsx(all_rows, out_path, leg_label)
 
-    n_hyp = len(hyp_rows)
-    n_net = len([r for r in bio_rows if r["station_id"].endswith("_1")])
-    n_bkt = len([r for r in bio_rows if not r["station_id"].endswith("_1")])
-    print(f"  [SCIENCE] {n_hyp} ligne(s) HYP + {n_net} filet(s) + {n_bkt} bucket(s) → {out_path}")
+    n_hyp  = len(hyp_rows)
+    n_filt = len([r for r in bio_rows if "_filt"   in r.get("station_id","")])
+    n_bkt  = len([r for r in bio_rows if "_bucket" in r.get("station_id","")])
+    print(f"  [SCIENCE] {n_hyp} station(s) HYP + {n_filt} filtration(s) + {n_bkt} bucket(s) → {out_path}")
     print( "  [SCIENCE] → Vérifier puis copier-coller dans Bio_sampling_Vela_Lab (Google Drive).")

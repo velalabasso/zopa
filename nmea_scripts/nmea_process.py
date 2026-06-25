@@ -151,57 +151,104 @@ def haversine_vec(lat1, lon1, lat2, lon2):
 # =========================================================
 # EVENT CLASSIFIER
 # =========================================================
-
 def classify_event(raw):
-    if " | " in raw:
-        raw = raw.split(" | ", 1)[1].strip()
+    # Garder le raw complet pour les checks initiaux
+    raw_full = raw.strip()
+    
+    # Extraire la première partie avant " | " pour la classification principale
+    # mais garder le reste pour les détails
+    if " | " in raw_full:
+        first_part = raw_full.split(" | ", 1)[0].strip()
+    else:
+        first_part = raw_full
+    
+    # Classer basé sur la première partie
+    if first_part.startswith("ENGINE"):
+        # Pour ENGINE, extraire ON/OFF peu importe ce qui suit (cooling water, etc.)
+        detail = "ON" if "ON" in first_part.upper() else "OFF"
+        return "ENGINE", detail
+    elif first_part == "MAIN ON":        return "MAIN",          "ON " + raw_full.replace("MAIN ON","").strip()
+    elif first_part == "MAIN OFF":       return "MAIN",          "OFF"
+    elif first_part == "JIB ON":         return "JIB",           "ON"
+    elif first_part == "JIB OFF":        return "JIB",           "OFF"
+    elif first_part == "STAYSAIL ON":    return "STAYSAIL",      "ON"
+    elif first_part == "STAYSAIL OFF":   return "STAYSAIL",      "OFF"
+    elif first_part == "STORMJIB ON":    return "STORMJIB",      "ON"
+    elif first_part == "STORMJIB OFF":   return "STORMJIB",      "OFF"
+    elif first_part == "SPINNAKER ON":   return "SPINNAKER",     "ON"
+    elif first_part == "SPINNAKER OFF":  return "SPINNAKER",     "OFF"
+    elif first_part == "DESSAL ON":      return "DESSAL",        "ON"
+    elif first_part == "DESSAL OFF":     return "DESSAL",        "OFF"
+    elif first_part.startswith("SEA"):   return "SEA",           first_part.replace("SEA","").strip()
+    elif first_part == "HYPERNET ON":    return "HYPERNET",      "ON"
+    elif first_part == "HYPERNET OFF":   return "HYPERNET",      "OFF"
+    elif first_part == "NET ON":         return "NET",           "ON"
+    elif first_part == "NET OFF":        return "NET",           "OFF"
+    elif first_part == "INLINE ON":      return "INLINE",        "ON"
+    elif first_part == "INLINE OFF":     return "INLINE",        "OFF"
+    elif first_part == "CTD KEEL ON":    return "CTD_KEEL",      "ON"
+    elif first_part == "CTD KEEL OFF":   return "CTD_KEEL",      "OFF"
+    elif first_part == "CTD PROFILE ON": return "CTD_PROFILE",   "ON"
+    elif first_part == "CTD PROFILE OFF": return "CTD_PROFILE",  "OFF"
+    elif first_part == "CTD INTERCOMP ON": return "CTD_INTERCOMP", "ON"
+    elif first_part == "CTD INTERCOMP OFF": return "CTD_INTERCOMP", "OFF"
+    
+    elif first_part.startswith("STATION BIO"):
+        detail = raw_full.replace("STATION BIO","").strip()
+        return "STATION_BIO", detail
+    
+    elif first_part.startswith("STATION HYP"):
+        detail = raw_full.replace("STATION HYP","").strip()
+        return "STATION_HYP", detail
+        
+    elif first_part.startswith("FILTRATION"): 
+        # Extraire ON/OFF et détails (SIZE, VOLUME, SATURATION)
+        detail = raw_full.replace("FILTRATION","").strip()
+        return "FILTRATION", detail
+    elif first_part == "TURBIDITY":
+        # Format: TURBIDITY | T1=X | T2=Y | T3=Z
+        detail = raw_full.replace("TURBIDITY","").strip()
+        return "TURBIDITY", detail
+    elif first_part == "SECCHI":
+        # Format: SECCHI | DEPTH X m
+        detail = raw_full.replace("SECCHI","").strip()
+        return "SECCHI", detail
+    elif first_part == "BUCKET":
+        return "BUCKET", "WATER SAMPLE"
+    elif "NM COMPLETED" in raw_full or "NM REMAINING" in raw_full: 
+        return "SKIP", raw_full
+    elif raw_full == "DESTINATION REACHED":     
+        return "ARRIVAL",       "DESTINATION REACHED"
+    elif raw_full.startswith("ARRIVAL"):        
+        return "ARRIVAL",       raw_full.replace("ARRIVAL :","").strip()
+    elif raw_full.startswith("TOTAL TRAVELED"): 
+        return "ARRIVAL",       raw_full
+    elif raw_full.startswith("NAV :"):          
+        return "NAV_COMMENT",   raw_full[4:].strip()
+    elif raw_full.startswith("SCI :"):          
+        return "SCI_COMMENT",   raw_full[4:].strip()
+    elif raw_full.startswith("COMMENT :"):      
+        return "NAV_COMMENT",   raw_full.replace("COMMENT :","").strip()
+    else:                                  
+        return "OTHER",          raw_full
+        
 
-    raw = raw.strip()
-    if raw.startswith("ENGINE"):           return "ENGINE",        raw.replace("ENGINE","").strip()
-    elif raw.startswith("MAIN ON"):        return "MAIN",          ("ON " + raw.replace("MAIN ON","").strip()).strip()
-    elif raw == "MAIN OFF":                return "MAIN",          "OFF"
-    elif raw == "JIB ON":                  return "JIB",           "ON"
-    elif raw == "JIB OFF":                 return "JIB",           "OFF"
-    elif raw == "STAYSAIL ON":             return "STAYSAIL",      "ON"
-    elif raw == "STAYSAIL OFF":            return "STAYSAIL",      "OFF"
-    elif raw == "STORMJIB ON":             return "STORMJIB",      "ON"
-    elif raw == "STORMJIB OFF":            return "STORMJIB",      "OFF"
-    elif raw == "SPINNAKER ON":            return "SPINNAKER",     "ON"
-    elif raw == "SPINNAKER OFF":           return "SPINNAKER",     "OFF"
-    elif raw == "DESSAL ON":               return "DESSAL",        "ON"
-    elif raw == "DESSAL OFF":              return "DESSAL",        "OFF"
-    elif raw.startswith("SEA"):            return "SEA",           raw.replace("SEA","").strip()
-    elif raw == "HYPERNET ON":             return "HYPERNET",      "ON"
-    elif raw == "HYPERNET OFF":            return "HYPERNET",      "OFF"
-    elif raw == "NET ON":                  return "NET",           "ON"
-    elif raw == "NET OFF":                 return "NET",           "OFF"
-    elif raw == "INLINE ON":               return "INLINE",        "ON"
-    elif raw == "INLINE OFF":              return "INLINE",        "OFF"
-    elif raw == "CTD KEEL ON":             return "CTD_KEEL",      "ON"
-    elif raw == "CTD KEEL OFF":            return "CTD_KEEL",      "OFF"
-    elif raw == "CTD PROFILE ON":          return "CTD_PROFILE",   "ON"
-    elif raw == "CTD PROFILE OFF":         return "CTD_PROFILE",   "OFF"
-    elif raw == "CTD INTERCOMP ON":        return "CTD_INTERCOMP", "ON"
-    elif raw == "CTD INTERCOMP OFF":       return "CTD_INTERCOMP", "OFF"
-    elif "NM COMPLETED" in raw or "NM REMAINING" in raw: return "SKIP", raw
-    elif raw == "DESTINATION REACHED":     return "ARRIVAL",       "DESTINATION REACHED"
-    elif raw.startswith("ARRIVAL"):        return "ARRIVAL",       raw.replace("ARRIVAL :","").strip()
-    elif raw.startswith("TOTAL TRAVELED"): return "ARRIVAL",       raw
-    elif raw.startswith("NAV :"):          return "NAV_COMMENT",   raw[4:].strip()
-    elif raw.startswith("SCI :"):          return "SCI_COMMENT",   raw[4:].strip()
-    elif raw.startswith("COMMENT :"):      return "NAV_COMMENT",   raw.replace("COMMENT :","").strip()
-    else:                                  return "OTHER",          raw
-
-
-SCIENCE_EVENT_TYPES = {"HYPERNET","NET","INLINE","CTD_KEEL","CTD_PROFILE","CTD_INTERCOMP","SCI_COMMENT"}
-NAV_EVENT_TYPES     = {"ENGINE","MAIN","JIB","STAYSAIL","STORMJIB","SPINNAKER","DESSAL",
-                       "SEA","ARRIVAL","OTHER","NAV_COMMENT"}
-
+SCIENCE_EVENT_TYPES = {
+    "HYPERNET","NET","INLINE",
+    "CTD_KEEL","CTD_PROFILE","CTD_INTERCOMP",
+    "FILTRATION","TURBIDITY","SECCHI","BUCKET",
+    "STATION_BIO","STATION_HYP",
+    "SCI_COMMENT"
+}
+ 
+NAV_EVENT_TYPES     = {
+    "ENGINE","MAIN","JIB","STAYSAIL","STORMJIB","SPINNAKER","DESSAL",
+    "SEA","ARRIVAL","OTHER","NAV_COMMENT"
+}
 
 # =========================================================
 # PARSER NMEA + EVENTS
 # =========================================================
-
 def parse_nmea(file_path):
 
     records = []
@@ -275,11 +322,20 @@ def parse_nmea(file_path):
 
     ENGINE_BILGE_PLAIN_KEY = "ENGINE BILGE"
 
+    # Navigation state
     cur_engine="OFF"; cur_dessal="OFF"; cur_main="OFF"
     cur_jib="OFF"; cur_staysail="OFF"; cur_stormjib="OFF"; cur_spinnaker="OFF"
-    cur_sea="0"; cur_hypernet="OFF"; cur_net="OFF"; cur_inline="OFF"
+    cur_sea="0"
+    
+    # Science state
+    cur_hypernet="OFF"; cur_net="OFF"; cur_inline="OFF"
     cur_ctd_keel="OFF"; cur_ctd_profile="OFF"; cur_ctd_intercomp="OFF"
+    
+    # Science stations (contextual)
+    cur_bio_station = None
+    cur_hyp_station = None
 
+    # Engine hours tracking
     engine_on_since       = None
     engine_minutes_cum    = 0.0
 
@@ -291,6 +347,9 @@ def parse_nmea(file_path):
     for line in all_lines:
         line = line.strip()
 
+        # =========================================================
+        # Parse header/metadata (before events)
+        # =========================================================
         if " : " in line and not line.startswith("$") and not line.startswith("# EVENT"):
             raw_key, _, raw_val = line.partition(" : ")
             normalized_key = raw_key.strip()
@@ -303,6 +362,9 @@ def parse_nmea(file_path):
             if not matched and normalized_key == ENGINE_BILGE_PLAIN_KEY:
                 meta["engine_bilge_end"] = raw_val.strip()
 
+        # =========================================================
+        # Parse events (# EVENT lines)
+        # =========================================================
         if line.startswith("# EVENT"):
             import re
             m_ts = re.match(r"# EVENT \[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\] : (.*)", line)
@@ -323,6 +385,28 @@ def parse_nmea(file_path):
             if etype == "SKIP":
                 continue
 
+            # =========================================================
+            # Update science stations (must be before other events)
+            # =========================================================
+            if etype == "STATION_BIO":
+                if "ON" in edetail.upper():
+                    m_bio = re.search(r'Vela_Lab_bio_st(\d+)', edetail)
+                    if m_bio:
+                        cur_bio_station = f"Vela_Lab_bio_st{m_bio.group(1)}"
+                else:
+                    cur_bio_station = None
+            
+            elif etype == "STATION_HYP":
+                if "ON" in edetail.upper():
+                    m_hyp = re.search(r'Vela_Lab_hyp_st(\d+)', edetail)
+                    if m_hyp:
+                        cur_hyp_station = f"Vela_Lab_hyp_st{m_hyp.group(1)}"
+                else:
+                    cur_hyp_station = None
+
+            # =========================================================
+            # Update navigation state
+            # =========================================================
             if etype == "ENGINE":
                 if "ON" in edetail:
                     cur_engine = "ON"
@@ -345,12 +429,17 @@ def parse_nmea(file_path):
             elif etype == "STORMJIB":  cur_stormjib  = edetail
             elif etype == "SPINNAKER": cur_spinnaker = edetail
             elif etype == "SEA":       cur_sea       = edetail
+            
+            # =========================================================
+            # Update science state
+            # =========================================================
             elif etype == "HYPERNET":  cur_hypernet  = edetail
             elif etype == "NET":       cur_net       = edetail
             elif etype == "INLINE":    cur_inline    = edetail
             elif etype == "CTD_KEEL":       cur_ctd_keel      = edetail
             elif etype == "CTD_PROFILE":    cur_ctd_profile   = edetail
             elif etype == "CTD_INTERCOMP":  cur_ctd_intercomp = edetail
+            
             elif etype == "ARRIVAL":
                 rd = edetail.strip()
                 is_port = (rd != "DESTINATION REACHED"
@@ -361,6 +450,9 @@ def parse_nmea(file_path):
                 elif meta["arrival"] == "":
                     meta["arrival"] = f"DESTINATION REACHED  ({ts_str})" if ts_str else rd
 
+            # =========================================================
+            # Build current sails list
+            # =========================================================
             sails = []
             if cur_main      == "ON": sails.append("MAIN")
             if cur_jib       == "ON": sails.append("JIB")
@@ -368,6 +460,9 @@ def parse_nmea(file_path):
             if cur_stormjib  == "ON": sails.append("STORM JIB")
             if cur_spinnaker == "ON": sails.append("SPINNAKER")
 
+            # =========================================================
+            # Calculate engine minutes (including running since last event)
+            # =========================================================
             engine_minutes_now = engine_minutes_cum
             if cur_engine == "ON" and engine_on_since is not None and ev_timestamp is not None:
                 try:
@@ -379,6 +474,9 @@ def parse_nmea(file_path):
 
             is_retro = (m_ts is not None)
 
+            # =========================================================
+            # Append event to events list WITH stations
+            # =========================================================
             events.append({
                 "timestamp":ev_timestamp, "lat":last_lat, "lon":last_lon,
                 "is_retrodate": is_retro,
@@ -391,9 +489,14 @@ def parse_nmea(file_path):
                 "ctd_keel":cur_ctd_keel, "ctd_profile":cur_ctd_profile,
                 "ctd_intercomp":cur_ctd_intercomp,
                 "engine_minutes": engine_minutes_now,
+                "bio_station": cur_bio_station,
+                "hyp_station": cur_hyp_station,
             })
             continue
 
+        # =========================================================
+        # Parse NMEA sentences
+        # =========================================================
         if not line.startswith("$"):
             continue
 
@@ -474,8 +577,12 @@ def parse_nmea(file_path):
                 current["log_total_nm"] = safe_float(parts[2])
                 current["log_trip_nm"]  = safe_float(parts[4])
 
-    if current: records.append(current)
+    if current: 
+        records.append(current)
 
+    # =========================================================
+    # Build dataframes
+    # =========================================================
     df = pd.DataFrame(records)
     if not df.empty:
         awa  = np.radians(df.get("AWA",    pd.Series(np.nan, index=df.index)).values)
@@ -500,6 +607,9 @@ def parse_nmea(file_path):
 
     df_events = pd.DataFrame(events)
 
+    # =========================================================
+    # Fill retrodate positions (if events have timestamps before data)
+    # =========================================================
     if records and not df_events.empty and "is_retrodate" in df_events.columns:
         _recs_with_pos = [(r["datetime"], r["lat_raw"], r["lon_raw"])
                           for r in records
@@ -1442,9 +1552,14 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
 
             hdr = ev_header[:]
             cw  = cw_e[:]
+            
+ 
             if show_science_col:
-                hdr = ev_header[:6] + ["SCIENCE"] + ev_header[6:]
-                cw  = cw_e[:6] + [2.6*cm] + cw_e[6:]
+                hdr = ev_header[:6] + ["SCIENCE","STATION"] + ev_header[6:]
+                cw  = cw_e[:6] + [2.6*cm, 2.0*cm] + cw_e[6:]
+            else:
+                hdr = ev_header[:]
+                cw  = cw_e[:]
 
             ev_data    = [hdr]
             row_colors = []
@@ -1475,8 +1590,17 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
                     str(r.get("sails", "-")),
                     str(r.get("sea",   "-")),
                 ]
+                
                 if show_science_col:
                     row.append(science_str_from_row(r))
+                    # Déterminer la station
+                    station_str = "-"
+                    if str(r.get("bio_station", "-")) != "None" and r.get("bio_station"):
+                        station_str = str(r.get("bio_station", "-")).split("st")[-1]
+                    elif str(r.get("hyp_station", "-")) != "None" and r.get("hyp_station"):
+                        station_str = str(r.get("hyp_station", "-")).split("st")[-1]
+                    row.append(station_str)
+                    
                 row += [
                     fmt(inst.get("sog_i")), fmt(inst.get("tws_i")),
                     fmt(inst.get("twd_i"), 0), fmt(inst.get("hdg_i"), 0),

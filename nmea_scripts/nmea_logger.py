@@ -57,6 +57,9 @@ ctd_keel_state      = "OFF"
 ctd_profile_state   = "OFF"
 ctd_intercomp_state = "OFF"
 
+bio_station_id = None      # e.g. "01", "02"
+hyp_station_id = None      # e.g. "001", "002"
+
 _shutdown_requested = False
 
 # =========================================================
@@ -617,6 +620,38 @@ def navigation_setup():
 # TERMINAL EVENTS
 # =========================================================
 
+def ask_station_id(name, format_str="Station ID"):
+    """Ask user for station ID. format_str can be like '01' or '001'."""
+    while True:
+        raw = input(f"  {name} ID (e.g. 01 or 001) : ").strip()
+        if raw:
+            return raw
+        print("  Please enter an ID.")
+
+def check_station_active(station_type):
+    """Check if required station is active. station_type = 'bio' or 'hyp'."""
+    global bio_station_id, hyp_station_id
+    if station_type == "bio":
+        if not bio_station_id:
+            print("  ❌ No active BIO station. Use 'station bio on' first.")
+            return False
+        return True
+    elif station_type == "hyp":
+        if not hyp_station_id:
+            print("  ❌ No active HYP station. Use 'station hyp on' first.")
+            return False
+        return True
+    return False
+
+def get_station_name(station_type):
+    """Get the full station name with ID."""
+    global bio_station_id, hyp_station_id
+    if station_type == "bio":
+        return f"Vela_Lab_bio_st{bio_station_id}"
+    elif station_type == "hyp":
+        return f"Vela_Lab_hyp_st{hyp_station_id}"
+    return ""
+
 def terminal_event_listener():
 
     global motor_state, dessal_state
@@ -625,6 +660,7 @@ def terminal_event_listener():
     global sea_state
     global hypernet_state, net_state, inline_state, filtration_state
     global ctd_keel_state, ctd_profile_state, ctd_intercomp_state
+    global bio_station_id, hyp_station_id  
 
     def print_help():
         print("\n===================================")
@@ -645,14 +681,17 @@ def terminal_event_listener():
         print(" s: text         (science comment)")
         print(" state           (show current state)")
         print("\n--- Science ---")
-        print(" hypernet on/off")
+        print(" station bio on     (asks for ID)")
+        print(" station bio off")
+        print(" filtration on      (with active station)")
+        print(" filtration off     (asks size + volume + saturation + planctospace)")
+        print(" bucket")
         print(" net on/off")
-        print(" inline on/off")
-        print(" filtration on   (asks filter size)")
-        print(" filtration off  (asks size + volume + saturation)")
-        print(" turbidity       (triplicat de mesures)")
-        print(" secchi          (profondeur disque Secchi)")
-        print(" bucket          (instant event)")
+        print(" station hyp on     (asks for ID)")
+        print(" station hyp off")
+        print(" hypernet on/off")
+        print(" turbidity")
+        print(" secchi")
         print(" ctd keel on/off")
         print(" ctd profile on/off")
         print(" ctd intercomp on/off")
@@ -748,61 +787,145 @@ def terminal_event_listener():
                     print("  Usage : s: your comment")
 
             # ---- Science ----
+                
+                       # ---- Stations ----
+                       
+            elif cmd_lower == "station bio on":
+                bio_station_id = ask_station_id("BIO")
+                station_name = f"Vela_Lab_bio_st{bio_station_id}"
+                write_event(f"STATION BIO ON | ID {station_name}")
+
+            elif cmd_lower == "station bio off":
+                if bio_station_id:
+                    station_name = f"Vela_Lab_bio_st{bio_station_id}"
+                    write_event(f"STATION BIO OFF | ID {station_name}")
+                    bio_station_id = None
+                else:
+                    print("  No active BIO station.")
+
+            elif cmd_lower == "station hyp on":
+                hyp_station_id = ask_station_id("HYP")
+                station_name = f"Vela_Lab_hyp_st{hyp_station_id}"
+                write_event(f"STATION HYP ON | ID {station_name}")
+
+            elif cmd_lower == "station hyp off":
+                if hyp_station_id:
+                    station_name = f"Vela_Lab_hyp_st{hyp_station_id}"
+                    write_event(f"STATION HYP OFF | ID {station_name}")
+                    hyp_station_id = None
+                else:
+                    print("  No active HYP station.")
+
+            # ---- Science (BIO station) ----
             elif cmd_lower == "filtration on":
-                size = filtration_on_sequence()
-                filtration_state = "ON"
-                write_event(f"FILTRATION ON | SIZE {size.upper()}")
+                if check_station_active("bio"):
+                    station_name = get_station_name("bio")
+                    size = filtration_on_sequence()
+                    write_event(f"FILTRATION ON | STATION {station_name} | SIZE {size.upper()}")
 
             elif cmd_lower == "filtration off":
-                size, volume, saturated = filtration_off_sequence()
-                filtration_state = "OFF"
-                sat_str = "YES" if saturated else "NO"
-                write_event(
-                    f"FILTRATION OFF | SIZE {size.upper()} "
-                    f"| VOLUME {volume:.1f} mL | SATURATION {sat_str}"
-                )
-
-            elif cmd_lower == "turbidity":
-                vals = []
-                for i in range(1, 4):
+                if check_station_active("bio"):
+                    station_name = get_station_name("bio")
+                    size, volume, saturated = filtration_off_sequence()
+                    
+                    # Ask for planctospace station
                     while True:
-                        try:
-                            v = float(input(f"  Turbidity {i} : ").strip())
-                            vals.append(v)
+                        ps_id = input("  Planctospace station (#06-XX, enter XX) : ").strip()
+                        if ps_id:
                             break
-                        except ValueError:
-                            print("  Please enter a numeric value.")
-                write_event(
-                    f"TURBIDITY | "
-                    f"T1={vals[0]:.4f} | T2={vals[1]:.4f} | T3={vals[2]:.4f}"
-                )
-
-            elif cmd_lower == "secchi":
-                while True:
-                    try:
-                        depth = float(input("  Profondeur du disque Secchi (m) : ").strip())
-                        if depth < 0: raise ValueError("must be >= 0")
-                        break
-                    except ValueError as e:
-                        print(f"  Invalid value ({e}), try again.")
-                write_event(f"SECCHI | DEPTH {depth:.2f} m")
-
-            elif cmd_lower == "ctd keel on":        ctd_keel_state = "ON";        write_event("CTD KEEL ON")
-            elif cmd_lower == "ctd keel off":       ctd_keel_state = "OFF";       write_event("CTD KEEL OFF")
-            elif cmd_lower == "ctd profile on":     ctd_profile_state = "ON";     write_event("CTD PROFILE ON")
-            elif cmd_lower == "ctd profile off":    ctd_profile_state = "OFF";    write_event("CTD PROFILE OFF")
-            elif cmd_lower == "ctd intercomp on":   ctd_intercomp_state = "ON";   write_event("CTD INTERCOMP ON")
-            elif cmd_lower == "ctd intercomp off":  ctd_intercomp_state = "OFF";  write_event("CTD INTERCOMP OFF")
-
-            elif cmd_lower == "hypernet on":        hypernet_state = "ON";    write_event("HYPERNET ON")
-            elif cmd_lower == "hypernet off":       hypernet_state = "OFF";   write_event("HYPERNET OFF")
-            elif cmd_lower == "net on":             net_state = "ON";         write_event("NET ON")
-            elif cmd_lower == "net off":            net_state = "OFF";        write_event("NET OFF")
-            elif cmd_lower == "inline on":          inline_state = "ON";      write_event("INLINE ON")
-            elif cmd_lower == "inline off":         inline_state = "OFF";     write_event("INLINE OFF")
+                        print("  Please enter a planctospace station ID.")
+                    
+                    sat_str = "YES" if saturated else "NO"
+                    write_event(
+                        f"FILTRATION OFF | STATION {station_name} | SIZE {size.upper()} "
+                        f"| VOLUME {volume:.1f} mL | SATURATION {sat_str} | PLANCTOSPACE st06-{ps_id}"
+                    )
 
             elif cmd_lower == "bucket":
-                write_event("BUCKET")
+                if check_station_active("bio"):
+                    station_name = get_station_name("bio")
+                    write_event(f"BUCKET | STATION {station_name}")
+
+            elif cmd_lower == "net on":
+                if check_station_active("bio"):
+                    station_name = get_station_name("bio")
+                    net_state = "ON"
+                    write_event(f"NET ON | STATION {station_name}")
+
+            elif cmd_lower == "net off":
+                if check_station_active("bio"):
+                    station_name = get_station_name("bio")
+                    net_state = "OFF"
+                    write_event(f"NET OFF | STATION {station_name}")
+
+            # ---- Science (HYP station) ----
+            elif cmd_lower == "hypernet on":
+                if check_station_active("hyp"):
+                    station_name = get_station_name("hyp")
+                    hypernet_state = "ON"
+                    write_event(f"HYPERNET ON | STATION {station_name}")
+
+            elif cmd_lower == "hypernet off":
+                if check_station_active("hyp"):
+                    station_name = get_station_name("hyp")
+                    hypernet_state = "OFF"
+                    write_event(f"HYPERNET OFF | STATION {station_name}")
+
+            elif cmd_lower == "turbidity":
+                if check_station_active("hyp"):
+                    station_name = get_station_name("hyp")
+                    vals = []
+                    for i in range(1, 4):
+                        while True:
+                            try:
+                                v = float(input(f"  Turbidity {i} : ").strip())
+                                vals.append(v)
+                                break
+                            except ValueError:
+                                print("  Please enter a numeric value.")
+                    write_event(
+                        f"TURBIDITY | STATION {station_name} | "
+                        f"T1={vals[0]:.4f} | T2={vals[1]:.4f} | T3={vals[2]:.4f}"
+                    )
+
+            elif cmd_lower == "secchi":
+                if check_station_active("hyp"):
+                    station_name = get_station_name("hyp")
+                    while True:
+                        try:
+                            depth = float(input("  Profondeur du disque Secchi (m) : ").strip())
+                            if depth < 0: raise ValueError("must be >= 0")
+                            break
+                        except ValueError as e:
+                            print(f"  Invalid value ({e}), try again.")
+                    write_event(f"SECCHI | STATION {station_name} | DEPTH {depth:.2f} m")
+
+            elif cmd_lower == "ctd keel on":
+                ctd_keel_state = "ON"
+                write_event("CTD KEEL ON")
+
+            elif cmd_lower == "ctd keel off":
+                ctd_keel_state = "OFF"
+                write_event("CTD KEEL OFF")
+
+            elif cmd_lower == "ctd profile on":
+                ctd_profile_state = "ON"
+                write_event("CTD PROFILE ON")
+
+            elif cmd_lower == "ctd profile off":
+                ctd_profile_state = "OFF"
+                write_event("CTD PROFILE OFF")
+
+            elif cmd_lower == "ctd intercomp on":
+                ctd_intercomp_state = "ON"
+                write_event("CTD INTERCOMP ON")
+
+            elif cmd_lower == "ctd intercomp off":
+                ctd_intercomp_state = "OFF"
+                write_event("CTD INTERCOMP OFF")
+
+            elif cmd_lower == "inline on":          inline_state = "ON";      write_event("INLINE ON")
+            elif cmd_lower == "inline off":         inline_state = "OFF";     write_event("INLINE OFF")
 
             elif cmd_lower == "state":
                 print_state()
