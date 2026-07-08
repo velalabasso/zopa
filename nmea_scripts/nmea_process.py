@@ -656,6 +656,10 @@ def resample_every_0_1nm(df, df_events=None):
     SCIENCE_COLS = ["hypernet","net","inline","ctd_keel","ctd_profile","ctd_intercomp"]
     science_events = []
 
+    station_hyp_events = []  # (ts, "ON"/"OFF") — état brut des stations HYP, exploité
+                              # côté script carto (vela-carto.js) comme repli d'affichage
+                              # quand "hypernet on/off" n'a pas été loggé pour une station.
+
     if df_events is not None and not df_events.empty and "timestamp" in df_events.columns:
         ev  = df_events.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
         cur = {c:"OFF" for c in SCIENCE_COLS}
@@ -667,6 +671,9 @@ def resample_every_0_1nm(df, df_events=None):
             if et in mapping:
                 cur[mapping[et]] = ed
                 science_events.append((ts, dict(cur)))
+            if et == "STATION_HYP":
+                state = "ON" if str(ed).strip().upper().startswith("ON") else "OFF"
+                station_hyp_events.append((ts, state))
 
     df = df.copy()
     lats = df["lat_raw"].values; lons = df["lon_raw"].values
@@ -690,6 +697,7 @@ def resample_every_0_1nm(df, df_events=None):
     out = out[["longitude","latitude","timestamp","sog","tws","twd","heading","allure"]]
     out["timestamp"] = pd.to_datetime(out["timestamp"])
     for col in SCIENCE_COLS: out[col] = "OFF"
+    out["station_hyp"] = "OFF"  # état brut des stations HYP — repli utilisé côté vela-carto.js
 
     if science_events:
         ev_ts_ns = np.array([t.value for t, _ in science_events])
@@ -700,6 +708,15 @@ def resample_every_0_1nm(df, df_events=None):
             if pos >= 0:
                 for col in SCIENCE_COLS:
                     out.at[idx, col] = ev_states[pos][col]
+
+    if station_hyp_events:
+        st_ts_ns = np.array([t.value for t, _ in station_hyp_events])
+        st_states = [s for _, s in station_hyp_events]
+        ts_ns = out["timestamp"].values.astype("int64")
+        for idx, t in enumerate(ts_ns):
+            pos = np.searchsorted(st_ts_ns, t, side="right") - 1
+            if pos >= 0:
+                out.at[idx, "station_hyp"] = st_states[pos]
 
     out["timestamp"] = out["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     return out
