@@ -154,14 +154,14 @@ def haversine_vec(lat1, lon1, lat2, lon2):
 def classify_event(raw):
     # Garder le raw complet pour les checks initiaux
     raw_full = raw.strip()
-    
+
     # Extraire la première partie avant " | " pour la classification principale
     # mais garder le reste pour les détails
     if " | " in raw_full:
         first_part = raw_full.split(" | ", 1)[0].strip()
     else:
         first_part = raw_full
-    
+
     # Classer basé sur la première partie
     if first_part.startswith("ENGINE"):
         # Pour ENGINE, extraire ON/OFF peu importe ce qui suit (cooling water, etc.)
@@ -175,8 +175,12 @@ def classify_event(raw):
     elif first_part == "STAYSAIL OFF":   return "STAYSAIL",      "OFF"
     elif first_part == "STORMJIB ON":    return "STORMJIB",      "ON"
     elif first_part == "STORMJIB OFF":   return "STORMJIB",      "OFF"
-    elif first_part == "SPINNAKER ON":   return "SPINNAKER",     "ON"
-    elif first_part == "SPINNAKER OFF":  return "SPINNAKER",     "OFF"
+    # NOTE : le script de bord utilise la commande "spi on/off" et écrit
+    # les événements "SPI ON" / "SPI OFF". On les mappe ici vers le type
+    # interne "SPINNAKER" pour que tout le pipeline (état courant, colonne
+    # SAILS, event log) fonctionne sans changer la terminologie à bord.
+    elif first_part == "SPI ON":         return "SPINNAKER",     "ON"
+    elif first_part == "SPI OFF":        return "SPINNAKER",     "OFF"
     elif first_part == "DESSAL ON":      return "DESSAL",        "ON"
     elif first_part == "DESSAL OFF":     return "DESSAL",        "OFF"
     elif first_part.startswith("SEA"):   return "SEA",           first_part.replace("SEA","").strip()
@@ -192,16 +196,16 @@ def classify_event(raw):
     elif first_part == "CTD PROFILE OFF": return "CTD_PROFILE",  "OFF"
     elif first_part == "CTD INTERCOMP ON": return "CTD_INTERCOMP", "ON"
     elif first_part == "CTD INTERCOMP OFF": return "CTD_INTERCOMP", "OFF"
-    
+
     elif first_part.startswith("STATION BIO"):
         detail = raw_full.replace("STATION BIO","").strip()
         return "STATION_BIO", detail
-    
+
     elif first_part.startswith("STATION HYP"):
         detail = raw_full.replace("STATION HYP","").strip()
         return "STATION_HYP", detail
-        
-    elif first_part.startswith("FILTRATION"): 
+
+    elif first_part.startswith("FILTRATION"):
         # Extraire ON/OFF et détails (SIZE, VOLUME, SATURATION)
         detail = raw_full.replace("FILTRATION","").strip()
         return "FILTRATION", detail
@@ -215,23 +219,23 @@ def classify_event(raw):
         return "SECCHI", detail
     elif first_part == "BUCKET":
         return "BUCKET", "WATER SAMPLE"
-    elif "NM COMPLETED" in raw_full or "NM REMAINING" in raw_full: 
+    elif "NM COMPLETED" in raw_full or "NM REMAINING" in raw_full:
         return "SKIP", raw_full
-    elif raw_full == "DESTINATION REACHED":     
+    elif raw_full == "DESTINATION REACHED":
         return "ARRIVAL",       "DESTINATION REACHED"
-    elif raw_full.startswith("ARRIVAL"):        
+    elif raw_full.startswith("ARRIVAL"):
         return "ARRIVAL",       raw_full.replace("ARRIVAL :","").strip()
-    elif raw_full.startswith("TOTAL TRAVELED"): 
+    elif raw_full.startswith("TOTAL TRAVELED"):
         return "ARRIVAL",       raw_full
-    elif raw_full.startswith("NAV :"):          
+    elif raw_full.startswith("NAV :"):
         return "NAV_COMMENT",   raw_full[4:].strip()
-    elif raw_full.startswith("SCI :"):          
+    elif raw_full.startswith("SCI :"):
         return "SCI_COMMENT",   raw_full[4:].strip()
-    elif raw_full.startswith("COMMENT :"):      
+    elif raw_full.startswith("COMMENT :"):
         return "NAV_COMMENT",   raw_full.replace("COMMENT :","").strip()
-    else:                                  
+    else:
         return "OTHER",          raw_full
-        
+
 
 SCIENCE_EVENT_TYPES = {
     "HYPERNET","NET","INLINE",
@@ -240,7 +244,7 @@ SCIENCE_EVENT_TYPES = {
     "STATION_BIO","STATION_HYP",
     "SCI_COMMENT"
 }
- 
+
 NAV_EVENT_TYPES     = {
     "ENGINE","MAIN","JIB","STAYSAIL","STORMJIB","SPINNAKER","DESSAL",
     "SEA","ARRIVAL","OTHER","NAV_COMMENT"
@@ -326,11 +330,11 @@ def parse_nmea(file_path):
     cur_engine="OFF"; cur_dessal="OFF"; cur_main="OFF"
     cur_jib="OFF"; cur_staysail="OFF"; cur_stormjib="OFF"; cur_spinnaker="OFF"
     cur_sea="0"
-    
+
     # Science state
     cur_hypernet="OFF"; cur_net="OFF"; cur_inline="OFF"
     cur_ctd_keel="OFF"; cur_ctd_profile="OFF"; cur_ctd_intercomp="OFF"
-    
+
     # Science stations (contextual)
     cur_bio_station = None
     cur_hyp_station = None
@@ -395,7 +399,7 @@ def parse_nmea(file_path):
                         cur_bio_station = f"Vela_Lab_bio_st{m_bio.group(1)}"
                 else:
                     cur_bio_station = None
-            
+
             elif etype == "STATION_HYP":
                 if "ON" in edetail.upper():
                     m_hyp = re.search(r'Vela_Lab_hyp_st(\d+)', edetail)
@@ -429,7 +433,7 @@ def parse_nmea(file_path):
             elif etype == "STORMJIB":  cur_stormjib  = edetail
             elif etype == "SPINNAKER": cur_spinnaker = edetail
             elif etype == "SEA":       cur_sea       = edetail
-            
+
             # =========================================================
             # Update science state
             # =========================================================
@@ -439,7 +443,7 @@ def parse_nmea(file_path):
             elif etype == "CTD_KEEL":       cur_ctd_keel      = edetail
             elif etype == "CTD_PROFILE":    cur_ctd_profile   = edetail
             elif etype == "CTD_INTERCOMP":  cur_ctd_intercomp = edetail
-            
+
             elif etype == "ARRIVAL":
                 rd = edetail.strip()
                 is_port = (rd != "DESTINATION REACHED"
@@ -577,7 +581,7 @@ def parse_nmea(file_path):
                 current["log_total_nm"] = safe_float(parts[2])
                 current["log_trip_nm"]  = safe_float(parts[4])
 
-    if current: 
+    if current:
         records.append(current)
 
     # =========================================================
@@ -1219,6 +1223,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
         ("Fuel pre-filter",                  _ok(meta.get("fuel_pre_filter",""))),
         ("Sea water filter",                 _ok(meta.get("seawater_filter",""))),
         ("Engine bilge (aft)",               _ok(meta.get("engine_bilge",""))),
+        ("Engine bilge (fwd)",               _ok(meta.get("engine_bilge_fwd",""))),
         ("Coolant level",                    _ok(meta.get("coolant",""))),
         ("Belt tension",                     _ok(meta.get("belt",""))),
         ("Priming bulb",                     _ok(meta.get("priming_bulb",""))),
@@ -1552,8 +1557,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
 
             hdr = ev_header[:]
             cw  = cw_e[:]
-            
- 
+
             if show_science_col:
                 hdr = ev_header[:6] + ["SCIENCE","STATION"] + ev_header[6:]
                 cw  = cw_e[:6] + [2.6*cm, 2.0*cm] + cw_e[6:]
@@ -1590,7 +1594,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
                     str(r.get("sails", "-")),
                     str(r.get("sea",   "-")),
                 ]
-                
+
                 if show_science_col:
                     row.append(science_str_from_row(r))
                     # Déterminer la station
@@ -1600,7 +1604,7 @@ def generate_pdf(df, df_events, meta, out_pdf, in_progress=False):
                     elif str(r.get("hyp_station", "-")) != "None" and r.get("hyp_station"):
                         station_str = str(r.get("hyp_station", "-")).split("st")[-1]
                     row.append(station_str)
-                    
+
                 row += [
                     fmt(inst.get("sog_i")), fmt(inst.get("tws_i")),
                     fmt(inst.get("twd_i"), 0), fmt(inst.get("hdg_i"), 0),
@@ -1872,5 +1876,5 @@ for log_dir_name in os.listdir(base_folder):
     print("  CSV  :", out_csv)
 
     generate_pdf(df, df_events, meta, out_pdf, in_progress=in_progress)
-    
+
     run_science_export(df, df_events, meta, log_dir, base)
