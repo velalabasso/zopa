@@ -1,0 +1,4 @@
+longitude,latitude,timestamp,sog,tws,twd,heading,allure,hypernet,net,inline,ctd_keel,ctd_profile,ctd_intercomp,station_hyp
+-16.760305000000002,13.944656666666667,2026-11-03T10:51:33Z,0.0,9.4,47.0,19.7,close-hauled,OFF,OFF,OFF,ON,OFF,OFF,OFF
+-16.76030666666667,13.944638333333334,2026-11-03T11:15:39Z,0.2,10.9,28.2,20.1,close-hauled,OFF,OFF,OFF,ON,OFF,OFF,OFF
+-16.760293333333333,13.944651666666667,2026-11-03T11:40:06Z,0.1,8.1,37.8,13.3,close-hauled,OFF,OFF,OFF,ON,OFF,OFF,OFF
