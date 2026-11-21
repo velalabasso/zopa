@@ -1,0 +1,4 @@
+longitude,latitude,timestamp,sog,tws,twd,heading,allure,hypernet,net,inline,ctd_keel,ctd_profile,ctd_intercomp,station_hyp
+-16.68719666666667,14.046403333333334,2026-11-21T14:26:40Z,0.1,9.5,104.4,9.1,beam reach,OFF,OFF,OFF,OFF,OFF,OFF,OFF
+-16.687211666666666,14.046383333333331,2026-11-21T14:46:10Z,0.1,7.5,90.6,2.6,beam reach,ON,OFF,OFF,OFF,OFF,ON,OFF
+-16.687203333333333,14.046396666666665,2026-11-21T15:06:11Z,0.1,11.1,96.2,13.1,beam reach,ON,OFF,OFF,OFF,OFF,OFF,OFF
