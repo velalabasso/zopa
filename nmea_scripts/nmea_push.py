@@ -463,12 +463,20 @@ def main():
 
     section("Git")
     ensure_branch()
-    if online and git_fetch():
-        git_merge()
+    # 1) Commit local D'ABORD : sinon un merge refuse de démarrer dès que
+    #    GitHub a une version plus récente d'un fichier modifié sur le Pi
+    #    ("Your local changes would be overwritten by merge").
     git_skip_big_files()
     git_commit()
-    if online:
+    # 2) Puis récupération de GitHub + merge (en cas de conflit : version du Pi)
+    merged = True
+    if online and git_fetch():
+        merged = git_merge()
+    # 3) Push (inutile d'essayer si le merge a échoué : GitHub refuserait)
+    if online and merged:
         git_push_with_retry()
+    elif online:
+        print("  ✗ Push annulé (merge impossible) — sera retenté au prochain nmea_push")
 
     if online:
         section("Historique")
