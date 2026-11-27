@@ -656,6 +656,7 @@ def resample_every_0_1nm(df, df_events=None):
     SCIENCE_COLS = ["hypernet","net","inline","ctd_keel","ctd_profile","ctd_intercomp"]
     science_events = []
 
+    station_bio_events = []  # (ts, "ON"/"OFF") — état des stations BIO ("Station biologie" sur la carte)
     station_hyp_events = []  # (ts, "ON"/"OFF") — état brut des stations HYP, exploité
                               # côté script carto (vela-carto.js) comme repli d'affichage
                               # quand "hypernet on/off" n'a pas été loggé pour une station.
@@ -674,8 +675,12 @@ def resample_every_0_1nm(df, df_events=None):
             if et == "STATION_HYP":
                 state = "ON" if str(ed).strip().upper().startswith("ON") else "OFF"
                 station_hyp_events.append((ts, state))
+            if et == "STATION_BIO":
+                state = "ON" if str(ed).strip().upper().startswith("ON") else "OFF"
+                station_bio_events.append((ts, state))
 
-    df = df.copy()
+    # Points avec horodatage valide, triés dans le temps
+    df = df.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
     lats = df["lat_raw"].values; lons = df["lon_raw"].values
     valid = ~(np.isnan(lats) | np.isnan(lons))
     dists = np.zeros(len(df))
@@ -691,18 +696,36 @@ def resample_every_0_1nm(df, df_events=None):
 
     df["dist_nm"]  = dists
     df["bin_01nm"] = (df["dist_nm"] / 0.1).astype(int)
-    out = df.groupby("bin_01nm").first().reset_index()
+
+    # 1) Un point tous les 0,1 nm (comme avant). head(1) garde un vrai point
+    #    GPS entier (first() mélangeait les colonnes de plusieurs points).
+    keep = set(df.groupby("bin_01nm").head(1).index)
+
+    # 2) + une ligne à chaque event science / station HYP (ON et OFF), pour
+    #    ne jamais perdre une station faite à l'arrêt ou à la dérive lente
+    #    (sinon aucun point à 0,1 nm ne tombe entre le ON et le OFF).
+    ev_times = ([t for t, _ in science_events] + [t for t, _ in station_hyp_events]
+                + [t for t, _ in station_bio_events])
+    if ev_times and len(df):
+        ts_all = df["datetime"].values.astype("datetime64[ns]").astype("int64")
+        for t in ev_times:
+            pos = np.searchsorted(ts_all, t.value, side="left")  # 1er point NMEA à/après l'event
+            if pos < len(df):
+                keep.add(int(pos))
+
+    out = df.loc[sorted(keep)].reset_index(drop=True)
     out = out.rename(columns={"lon_raw":"longitude","lat_raw":"latitude","datetime":"timestamp",
                                "SOG_RMC":"sog","TWS":"tws","TWD":"twd","HDG":"heading"})
     out = out[["longitude","latitude","timestamp","sog","tws","twd","heading","allure"]]
     out["timestamp"] = pd.to_datetime(out["timestamp"])
     for col in SCIENCE_COLS: out[col] = "OFF"
+    out["station_bio"] = "OFF"  # état des stations BIO — points "Station biologie" de la carte
     out["station_hyp"] = "OFF"  # état brut des stations HYP — repli utilisé côté vela-carto.js
 
     if science_events:
         ev_ts_ns = np.array([t.value for t, _ in science_events])
         ev_states = [s for _, s in science_events]
-        ts_ns = out["timestamp"].values.astype("int64")
+        ts_ns = out["timestamp"].values.astype("datetime64[ns]").astype("int64")
         for idx, t in enumerate(ts_ns):
             pos = np.searchsorted(ev_ts_ns, t, side="right") - 1
             if pos >= 0:
@@ -712,11 +735,20 @@ def resample_every_0_1nm(df, df_events=None):
     if station_hyp_events:
         st_ts_ns = np.array([t.value for t, _ in station_hyp_events])
         st_states = [s for _, s in station_hyp_events]
-        ts_ns = out["timestamp"].values.astype("int64")
+        ts_ns = out["timestamp"].values.astype("datetime64[ns]").astype("int64")
         for idx, t in enumerate(ts_ns):
             pos = np.searchsorted(st_ts_ns, t, side="right") - 1
             if pos >= 0:
                 out.at[idx, "station_hyp"] = st_states[pos]
+
+    if station_bio_events:
+        sb_ts_ns  = np.array([t.value for t, _ in station_bio_events])
+        sb_states = [s for _, s in station_bio_events]
+        ts_ns = out["timestamp"].values.astype("datetime64[ns]").astype("int64")
+        for idx, t in enumerate(ts_ns):
+            pos = np.searchsorted(sb_ts_ns, t, side="right") - 1
+            if pos >= 0:
+                out.at[idx, "station_bio"] = sb_states[pos]
 
     out["timestamp"] = out["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     return out
@@ -1862,7 +1894,12 @@ for log_dir_name in os.listdir(base_folder):
     out_pdf  = os.path.join(log_dir, base + ".pdf")
 
     if not in_progress:
-        if os.path.exists(out_xlsx) and os.path.exists(out_csv) and os.path.exists(out_pdf):
+        # On ne saute le log que si les sorties sont PLUS RÉCENTES que le .gz :
+        # un log traité en cours de route (.txt) puis compressé à l'arrivée
+        # doit être retraité, sinon les derniers events n'arrivent jamais.
+        outs = [out_xlsx, out_csv, out_pdf]
+        src_mtime = os.path.getmtime(path)
+        if all(os.path.exists(p) and os.path.getmtime(p) >= src_mtime for p in outs):
             print("Already processed:", target_file); continue
 
     status = "IN PROGRESS" if in_progress else "DONE"
@@ -1895,3 +1932,64 @@ for log_dir_name in os.listdir(base_folder):
     generate_pdf(df, df_events, meta, out_pdf, in_progress=in_progress)
 
     run_science_export(df, df_events, meta, log_dir, base)
+
+# =========================================================
+# TRACE UNIQUE POUR LA CARTE DU SITE  (nmea_logs/track_all.csv)
+# =========================================================
+# Regroupe les CSV 0,1 nm de TOUS les legs en un seul fichier, allégé
+# (seulement les colonnes utiles à la carte, coordonnées arrondies) :
+# la carte n'a plus qu'un seul fichier à télécharger.
+
+TRACK_ALL_NAME = "track_all.csv"
+TRACK_ALL_COLS = ["longitude", "latitude", "timestamp", "sog", "tws",
+                  "hypernet", "net", "inline", "ctd_keel",
+                  "ctd_profile", "ctd_intercomp", "station_hyp", "station_bio"]
+SCIENCE_FLAG_COLS = TRACK_ALL_COLS[5:]
+
+
+def build_track_all(folder):
+    frames = []
+    for log_dir_name in sorted(os.listdir(folder)):
+        log_dir = os.path.join(folder, log_dir_name)
+        if not os.path.isdir(log_dir):
+            continue
+        for fn in os.listdir(log_dir):
+            # uniquement le CSV 0,1 nm du leg (même nom que le dossier)
+            if not fn.endswith(".csv") or fn.startswith((".", "~")):
+                continue
+            try:
+                d = pd.read_csv(os.path.join(log_dir, fn))
+            except Exception as e:
+                print(f"  [TRACK_ALL] {fn} ignoré : {e}")
+                continue
+            if not {"longitude", "latitude", "timestamp"}.issubset(d.columns):
+                continue
+            for c in TRACK_ALL_COLS:
+                if c not in d.columns:
+                    d[c] = "OFF" if c in SCIENCE_FLAG_COLS else np.nan
+            frames.append(d[TRACK_ALL_COLS])
+
+    if not frames:
+        print("  [TRACK_ALL] Aucun CSV de leg trouvé.")
+        return
+
+    allp = pd.concat(frames, ignore_index=True)
+    allp = allp.dropna(subset=["longitude", "latitude", "timestamp"])
+    allp["longitude"] = allp["longitude"].astype(float).round(5)   # ~1 m
+    allp["latitude"]  = allp["latitude"].astype(float).round(5)
+    allp["sog"]       = pd.to_numeric(allp["sog"], errors="coerce").round(1)
+    allp["tws"]       = pd.to_numeric(allp["tws"], errors="coerce").round(1)
+    for c in SCIENCE_FLAG_COLS:
+        allp[c] = allp[c].fillna("OFF").astype(str).str.strip().str.upper()
+    allp = (allp.sort_values("timestamp", kind="stable")
+                .drop_duplicates(subset=["timestamp", "longitude", "latitude"])
+                .reset_index(drop=True))
+
+    out = os.path.join(folder, TRACK_ALL_NAME)
+    tmp = out + ".tmp"
+    allp.to_csv(tmp, index=False)
+    os.replace(tmp, out)   # écriture atomique : jamais de fichier à moitié écrit
+    print(f"  [TRACK_ALL] {len(allp)} points, {len(frames)} leg(s) → {out}")
+
+
+build_track_all(base_folder)

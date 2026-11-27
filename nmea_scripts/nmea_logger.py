@@ -11,7 +11,7 @@ import math
 import signal
 import sys
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # =========================================================
 # CONFIG
@@ -32,6 +32,7 @@ os.makedirs(base_folder, exist_ok=True)
 
 event_log_file = None
 latest_fix     = None
+latest_fix_mono = None   # time.monotonic() au moment où latest_fix a été reçu
 
 distance_traveled_nm = 0
 initial_distance_nm  = None
@@ -277,7 +278,38 @@ def parse_rmc(line):
         return None
 
 # =========================================================
-# EVENT  — horodatage UTC système
+# HEURE GPS
+# =========================================================
+
+def set_fix(fix):
+    """Enregistre un nouveau fix GPS + l'instant (horloge monotone) de réception."""
+    global latest_fix, latest_fix_mono
+    latest_fix      = fix
+    latest_fix_mono = time.monotonic()
+
+
+def gps_now():
+    """
+    Heure UTC courante d'après le GPS : heure du dernier $GPRMC + temps écoulé
+    depuis sa réception (horloge monotone, indépendante de l'horloge du Pi qui
+    peut être fausse en mer : pas de RTC, pas de NTP).
+    Si la liaison NMEA est coupée, l'heure continue d'avancer correctement.
+    Retourne None tant qu'aucun fix GPS n'a été reçu.
+    """
+    if latest_fix is None or latest_fix_mono is None:
+        return None
+    return latest_fix["datetime"] + timedelta(seconds=time.monotonic() - latest_fix_mono)
+
+
+def now_utc_str():
+    """Heure GPS si disponible, sinon heure système du Pi (repli)."""
+    t = gps_now()
+    if t is None:
+        t = datetime.now(timezone.utc)
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+# =========================================================
+# EVENT  — horodatage UTC GPS
 # =========================================================
 
 def write_event(event, timestamp=None):
@@ -286,8 +318,9 @@ def write_event(event, timestamp=None):
     if timestamp:
         ts_str = timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
     else:
-        # Toujours utiliser l'heure UTC système pour l'horodatage
-        ts_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Heure GPS (même référence que la trace NMEA) ; heure du Pi
+        # seulement si aucun fix GPS n'a encore été reçu.
+        ts_str = now_utc_str()
 
     line = f"# EVENT [{ts_str}] : {event}"
 
@@ -352,31 +385,28 @@ def gauge_pct_to_litres(gauge_pct):
     return None
 
 
-def parse_engine_hours_hhmmss(prompt_text):
+def parse_engine_hours_hhmm(prompt_text):
     """
-    Demande les heures moteur au format HH:MM:SS et retourne un float en heures.
-    Accepte aussi un float direct (ex: 1.5).
+    Demande les heures moteur au format HH:MM et retourne un float en heures.
+    Accepte aussi un nombre décimal direct (ex: 1.5).
     """
     while True:
         raw = input(prompt_text).strip()
-        # Essai format HH:MM:SS
-        m = re.match(r"^(\d{1,3}):(\d{2}):(\d{2})$", raw)
+        m = re.match(r"^(\d{1,4}):(\d{2})$", raw)
         if m:
-            h = int(m.group(1))
+            h  = int(m.group(1))
             mn = int(m.group(2))
-            s  = int(m.group(3))
-            if mn < 60 and s < 60:
-                return h + mn / 60.0 + s / 3600.0
-            print("  Minutes et secondes doivent être < 60. Essayez à nouveau.")
+            if mn < 60:
+                return h + mn / 60.0
+            print("  Les minutes doivent être < 60. Essayez à nouveau.")
         else:
-            # Fallback : float
             try:
-                val = float(raw)
+                val = float(raw.replace(",", "."))
                 if val >= 0:
                     return val
                 print("  La valeur doit être >= 0.")
             except ValueError:
-                print("  Format invalide. Utilisez HH:MM:SS (ex: 012:34:56) ou un nombre décimal.")
+                print("  Format invalide. Utilisez HH:MM (ex: 12:34) ou un nombre décimal.")
 
 
 def fuel_check_interactive():
@@ -393,9 +423,9 @@ def fuel_check_interactive():
         except ValueError as e:
             print(f"  Invalid value ({e}), try again.")
 
-    # --- Format HH:MM:SS ---
-    engine_hours = parse_engine_hours_hhmmss(
-        "  Engine hours since last fill (HH:MM:SS) : "
+    # --- Format HH:MM ---
+    engine_hours = parse_engine_hours_hhmm(
+        "  Engine hours since last fill (HH:MM) : "
     )
 
     consumed    = engine_hours * CONSUMPTION
@@ -490,6 +520,26 @@ def filtration_off_sequence():
 def navigation_setup():
     global sea_state, ctd_keel_state
 
+    def ask_yn(question):
+        while True:
+            ans = input(f"{question} (Y/N) : ").strip().upper()
+            if ans in ("Y", "N"):
+                return ans == "Y"
+            print("  Please answer Y or N.")
+
+    # ---------- Mode : NAV ou MOORING ----------
+    print("\n===================================")
+    print("              MODE")
+    print("===================================\n")
+    while True:
+        ans = input("Nav or Mooring? (N/M) : ").strip().upper()
+        if ans in ("N", "NAV"):
+            mode = "NAV"; break
+        if ans in ("M", "MOORING"):
+            mode = "MOORING"; break
+        print("  Please answer N (Nav) or M (Mooring).")
+    is_nav = (mode == "NAV")
+
     print("\n===================================")
     print("       PART 1 — NAVIGATION")
     print("===================================\n")
@@ -498,122 +548,55 @@ def navigation_setup():
     crew        = input("Crew : ").strip()
     departure   = input("Departure port : ").strip()
     destination = input("Destination port : ").strip()
+    sea_val     = input("Sea state (0-9) : ").strip()
 
-    print("\nAccepted lat/lon formats:")
-    print("  43°21.456'N   |   43 21.456 N   |   4321.456N   |   43.3576")
+    # ---------- Engine check : NAV uniquement ----------
+    fuel_data = None
+    engine = {}
+    if is_nav:
+        print("\n===================================")
+        print("    PART 2 — ENGINE CONTROL CHECK")
+        print("===================================\n")
 
-    while True:
-        try:
-            raw = input("Destination latitude  (e.g. 43 21.456 N) : ").strip()
-            destination_lat = parse_deg_min(raw)
-            print(f"  -> {decimal_to_deg_min(destination_lat, is_lon=False)}")
-            break
-        except ValueError as e:
-            print(f"  Unrecognised format ({e}), try again.")
+        fuel_data = fuel_check_interactive()
 
-    while True:
-        try:
-            raw = input("Destination longitude (e.g. 005 22.123 E) : ").strip()
-            destination_lon = parse_deg_min(raw)
-            print(f"  -> {decimal_to_deg_min(destination_lon, is_lon=True)}")
-            break
-        except ValueError as e:
-            print(f"  Unrecognised format ({e}), try again.")
+        print("  [Aft engine compartment]")
+        engine["prefil_ok"]     = ask_yn("Fuel pre-filter clean")
+        engine["seawater_ok"]   = ask_yn("Sea water filter clean")
+        engine["priming_ok"]    = ask_yn("Priming bulb firm")
+        engine["bilge_ok_rear"] = ask_yn("Engine bilge dry and clean")
+        engine["coolant_ok"]    = ask_yn("Coolant level OK")
+        engine["seacock_ok"]    = ask_yn("Sea cock open and ignition on")
 
-    direct_str = input("\nDirect leg to destination? (Y/N) : ").strip().upper()
-    direct_leg = (direct_str == "Y")
+        print("\n  [Forward engine compartment]")
+        engine["belt_ok"]        = ask_yn("Belt tension OK (~1 cm deflection under thumb pressure)")
+        engine["bilge_ok_front"] = ask_yn("Engine bilge dry and clean (forward)")
 
-    manual_distance_nm = None
-    if not direct_leg:
-        while True:
-            try:
-                manual_distance_nm = float(input("Total distance to sail (nm) : ").strip())
-                if manual_distance_nm <= 0: raise ValueError("must be > 0")
-                break
-            except ValueError as e:
-                print(f"  Invalid value ({e}), try again.")
-
-    sea_val = input("\nSea state (0-9) : ").strip()
-
+    # ---------- Science ----------
     print("\n===================================")
-    print("    PART 2 — ENGINE CONTROL CHECK")
+    print("         PART 3 — SCIENCE")
     print("===================================\n")
 
-    def ask_yn(question):
-        while True:
-            ans = input(f"{question} (Y/N) : ").strip().upper()
-            if ans in ("Y", "N"):
-                return ans == "Y"
-            print("  Please answer Y or N.")
+    ctd_keel = "ON" if ask_yn("CTD keel ON?") else "OFF"
 
-    fuel_data = fuel_check_interactive()
-
-    print("  [Aft engine compartment]")
-    prefil_ok   = ask_yn("Fuel pre-filter clean")
-    seawater_ok = ask_yn("Sea water filter clean")
-
-    while True:
-        ans = input("Priming bulb firm (Y/N) : ").strip().upper()
-        if ans in ("Y", "N"):
-            priming_ok = (ans == "Y")
-            break
-        print("  Please answer Y or N.")
-
-    bilge_ok_rear = ask_yn("Engine bilge dry and clean")
-    coolant_ok    = ask_yn("Coolant level OK")
-    seacock_ok    = ask_yn("Sea cock open and ignition on")
-
-    print("\n  [Forward engine compartment]")
-    belt_ok        = ask_yn("Belt tension OK (~1 cm deflection under thumb pressure)")
-    bilge_ok_front = ask_yn("Engine bilge dry and clean (forward)")
-
-    print("\n===================================")
-    print("    PART 3 — BOAT CONTROL CHECK")
-    print("===================================\n")
-
-    bilges_dry   = ask_yn("Bilges dry")
-    portholes_ok = ask_yn("Portholes closed")
-    seacocks_ok  = ask_yn("Sea cocks closed")
-    boat_stowed  = ask_yn("Boat stowed and secured")
-
-    print("\n===================================")
-    print("         PART 4 — SCIENCE")
-    print("===================================\n")
-
-    ctd_keel = "ON" if input("CTD keel ON? (Y/N) : ").strip().upper() == "Y" else "OFF"
-
-    print("\n===================================\n")
-    engine_start_now = input("Engine ON now? (Y/N) : ").strip().upper() == "Y"
-    if engine_start_now:
-        # L'appel à engine_on_sequence() est différé après création du fichier log
-        # On stocke juste le flag ici
-        pass
+    # ---------- Engine ON : NAV uniquement ----------
+    engine_start_now = False
+    if is_nav:
+        print("\n===================================\n")
+        # L'event ENGINE ON est écrit après création du fichier log
+        engine_start_now = ask_yn("Engine ON now?")
 
     return {
-        "skipper"           : skipper,
-        "crew"              : crew,
-        "departure"         : departure,
-        "destination"       : destination,
-        "destination_lat"   : destination_lat,
-        "destination_lon"   : destination_lon,
-        "direct_leg"        : direct_leg,
-        "manual_distance_nm": manual_distance_nm,
-        "sea"               : sea_val,
-        "fuel_data"         : fuel_data,
-        "prefil_ok"         : prefil_ok,
-        "seawater_ok"       : seawater_ok,
-        "priming_ok"        : priming_ok,
-        "bilge_ok_rear"     : bilge_ok_rear,
-        "coolant_ok"        : coolant_ok,
-        "seacock_ok"        : seacock_ok,
-        "belt_ok"           : belt_ok,
-        "bilge_ok_front"    : bilge_ok_front,
-        "bilges_dry"        : bilges_dry,
-        "portholes_ok"      : portholes_ok,
-        "seacocks_ok"       : seacocks_ok,
-        "boat_stowed"       : boat_stowed,
-        "ctd_keel"          : ctd_keel,
-        "engine_start_now"  : engine_start_now,
+        "mode"            : mode,
+        "skipper"         : skipper,
+        "crew"            : crew,
+        "departure"       : departure,
+        "destination"     : destination,
+        "sea"             : sea_val,
+        "fuel_data"       : fuel_data,
+        "engine"          : engine,
+        "ctd_keel"        : ctd_keel,
+        "engine_start_now": engine_start_now,
     }
 
 # =========================================================
@@ -979,25 +962,13 @@ def main():
                     for line in data.split("\n"):
                         fix = parse_rmc(line.strip())
                         if fix:
-                            latest_fix = fix; break
+                            set_fix(fix); break
         except Exception:
             if not _shutdown_requested:
                 time.sleep(2)
 
     if _shutdown_requested:
         return
-
-    calculated_distance_nm = haversine_nm(
-        latest_fix["lat"], latest_fix["lon"],
-        setup["destination_lat"], setup["destination_lon"]
-    )
-
-    if setup["direct_leg"]:
-        initial_distance_nm = calculated_distance_nm
-        dist_note = "direct leg (calculated from GPS fix)"
-    else:
-        initial_distance_nm = setup["manual_distance_nm"]
-        dist_note = f"manual entry (calculated: {calculated_distance_nm:.1f} nm)"
 
     # ---------- create log file ----------
     ts     = latest_fix["datetime"].strftime("%Y%m%d_%H%M%S")
@@ -1011,9 +982,6 @@ def main():
     event_log_file = output_file
     print(f"Log: {output_file}")
 
-    dst_lat_str = decimal_to_deg_min(setup["destination_lat"], is_lon=False)
-    dst_lon_str = decimal_to_deg_min(setup["destination_lon"], is_lon=True)
-
     def yn(b): return "OK" if b else "NOK"
     fd = setup["fuel_data"]
 
@@ -1021,36 +989,31 @@ def main():
         f.write("====================================\n")
         f.write("         NAVIGATION LOG\n")
         f.write("====================================\n\n")
+        f.write(f"MODE : {setup['mode']}\n")
         f.write(f"SKIPPER : {setup['skipper']}\n")
         f.write(f"CREW : {setup['crew']}\n")
         f.write(f"DEPARTURE : {setup['departure']}\n")
         f.write(f"DESTINATION : {setup['destination']}\n")
-        f.write(f"DESTINATION LAT : {dst_lat_str}\n")
-        f.write(f"DESTINATION LON : {dst_lon_str}\n")
-        f.write(f"INITIAL DISTANCE : {initial_distance_nm:.1f} nm\n")
-        f.write(f"DIRECT LEG : {'YES' if setup['direct_leg'] else 'NO'} ({dist_note})\n")
         f.write(f"SEA : {setup['sea']}\n")
 
         f.write("\n--- ENGINE CONTROL CHECK ---\n")
-        f.write(f"LAST FILL (L)                        : {fd['last_fill_l']:.0f} L\n")
-        f.write(f"ENGINE HOURS SINCE LAST FILL (h)     : {fd['engine_hours']:.4f} h\n")
-        f.write(f"ESTIMATE 1 (engine hours)            : {fd['remaining_est1']:.1f} L  ({fd['pct_est1']:.1f} %)\n")
-        f.write(f"GAUGE READING                        : {fd['gauge_pct']:.0f} %\n")
-        f.write(f"ESTIMATE 2 (gauge)                   : {fd['remaining_est2']:.1f} L  ({fd['pct_est2']:.1f} %)\n")
-        f.write(f"FUEL PRE-FILTER     : {yn(setup['prefil_ok'])}\n")
-        f.write(f"SEA WATER FILTER    : {yn(setup['seawater_ok'])}\n")
-        f.write(f"PRIMING BULB        : {'FIRM' if setup['priming_ok'] else 'SOFT'}\n")
-        f.write(f"ENGINE BILGE (AFT)  : {yn(setup['bilge_ok_rear'])}\n")
-        f.write(f"COOLANT             : {yn(setup['coolant_ok'])}\n")
-        f.write(f"SEA COCK + IGNITION : {yn(setup['seacock_ok'])}\n")
-        f.write(f"BELT                : {yn(setup['belt_ok'])}\n")
-        f.write(f"ENGINE BILGE (FWD)  : {yn(setup['bilge_ok_front'])}\n")
-
-        f.write("\n--- BOAT CONTROL CHECK ---\n")
-        f.write(f"BILGES DRY       : {yn(setup['bilges_dry'])}\n")
-        f.write(f"PORTHOLES CLOSED : {yn(setup['portholes_ok'])}\n")
-        f.write(f"SEA COCKS CLOSED : {yn(setup['seacocks_ok'])}\n")
-        f.write(f"BOAT STOWED      : {yn(setup['boat_stowed'])}\n")
+        if fd is not None:
+            eg = setup["engine"]
+            f.write(f"LAST FILL (L)                        : {fd['last_fill_l']:.0f} L\n")
+            f.write(f"ENGINE HOURS SINCE LAST FILL (h)     : {fd['engine_hours']:.4f} h\n")
+            f.write(f"ESTIMATE 1 (engine hours)            : {fd['remaining_est1']:.1f} L  ({fd['pct_est1']:.1f} %)\n")
+            f.write(f"GAUGE READING                        : {fd['gauge_pct']:.0f} %\n")
+            f.write(f"ESTIMATE 2 (gauge)                   : {fd['remaining_est2']:.1f} L  ({fd['pct_est2']:.1f} %)\n")
+            f.write(f"FUEL PRE-FILTER     : {yn(eg['prefil_ok'])}\n")
+            f.write(f"SEA WATER FILTER    : {yn(eg['seawater_ok'])}\n")
+            f.write(f"PRIMING BULB        : {'FIRM' if eg['priming_ok'] else 'SOFT'}\n")
+            f.write(f"ENGINE BILGE (AFT)  : {yn(eg['bilge_ok_rear'])}\n")
+            f.write(f"COOLANT             : {yn(eg['coolant_ok'])}\n")
+            f.write(f"SEA COCK + IGNITION : {yn(eg['seacock_ok'])}\n")
+            f.write(f"BELT                : {yn(eg['belt_ok'])}\n")
+            f.write(f"ENGINE BILGE (FWD)  : {yn(eg['bilge_ok_front'])}\n")
+        else:
+            f.write("(not done - mooring)\n")
 
         f.write("\n--- SCIENCE ---\n")
         f.write(f"CTD KEEL : {setup['ctd_keel']}\n")
@@ -1094,7 +1057,7 @@ def main():
 
                         fix = parse_rmc(line)
                         if fix:
-                            latest_fix = fix
+                            set_fix(fix)
                             lat = fix["lat"]; lon = fix["lon"]
 
                             if last_position:
@@ -1106,16 +1069,12 @@ def main():
                     now = time.time()
                     if now - last_display > 30:
                         if latest_fix:
-                            # FIX: heure UTC système (pas l'heure GPS qui peut être décalée)
-                            ts_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                            # Heure GPS (l'horloge du Pi peut être fausse en mer)
+                            ts_now = now_utc_str()
                             ls  = decimal_to_deg_min(latest_fix["lat"], is_lon=False)
                             lo  = decimal_to_deg_min(latest_fix["lon"], is_lon=True)
-                            rem = haversine_nm(
-                                latest_fix["lat"], latest_fix["lon"],
-                                setup["destination_lat"], setup["destination_lon"]
-                            )
                             _buffered_print(
-                                f"[{ts_now}] {ls}  {lo}  REM={rem:.1f} nm  DIST={distance_traveled_nm:.1f} nm"
+                                f"[{ts_now}] {ls}  {lo}  DIST={distance_traveled_nm:.1f} nm"
                             )
                         last_display = now
 
