@@ -6,6 +6,8 @@ import os
 import gzip
 import io
 import math
+import re
+from datetime import datetime
 
 from process_science import run_science_export
 
@@ -251,6 +253,50 @@ NAV_EVENT_TYPES     = {
 }
 
 # =========================================================
+# HORLOGE DU PI vs HEURE GPS
+# =========================================================
+# Les anciens loggers horodataient les events avec l'horloge du Raspberry Pi,
+# qui peut être très fausse en mer (pas de RTC, pas de NTP). Or chaque event
+# est écrit dans le fichier au moment où il est tapé, juste après la dernière
+# trame $GPRMC reçue : l'écart "heure écrite − heure GPS précédente" donne
+# donc le décalage de l'horloge. On prend la médiane sur tous les events du
+# log (les events rétrodatés, tapés avec une heure à la main, sont minoritaires
+# et n'influencent pas la médiane).
+
+CLOCK_OFFSET_MIN_S = 60     # en dessous : horloge considérée juste
+RETRO_TOLERANCE_S  = 300    # écart > médiane ± 5 min → event rétrodaté
+
+
+def _rmc_dt(line):
+    p = line.split(",")
+    if len(p) < 10 or len(p[1]) < 6 or len(p[9]) != 6:
+        return None
+    try:
+        return datetime.strptime(p[9] + p[1][:6], "%d%m%y%H%M%S")
+    except ValueError:
+        return None
+
+
+def estimate_clock_offset(all_lines):
+    """Décalage médian (s) entre l'heure écrite des events et l'heure GPS."""
+    offsets, last = [], None
+    for line in all_lines:
+        if line.startswith("$GPRMC"):
+            dt = _rmc_dt(line.strip())
+            if dt:
+                last = dt
+        elif line.startswith("# EVENT [") and last is not None:
+            m = re.match(r"# EVENT \[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]", line)
+            if m:
+                ts = datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S")
+                offsets.append((ts - last).total_seconds())
+    if not offsets:
+        return 0
+    med = float(np.median(offsets))
+    return med if abs(med) >= CLOCK_OFFSET_MIN_S else 0
+
+
+# =========================================================
 # PARSER NMEA + EVENTS
 # =========================================================
 def parse_nmea(file_path):
@@ -348,6 +394,13 @@ def parse_nmea(file_path):
     with open_func(file_path, "rt") as f:
         all_lines = f.readlines()
 
+    # Recalage des events sur l'heure GPS (horloge du Pi fausse)
+    clock_offset = estimate_clock_offset(all_lines)
+    meta["clock_offset_s"] = clock_offset
+    if clock_offset:
+        print(f"  [HORLOGE] Events décalés de {clock_offset/3600:+.2f} h par rapport au GPS "
+              f"→ recalés sur l'heure GPS")
+
     for line in all_lines:
         line = line.strip()
 
@@ -374,7 +427,16 @@ def parse_nmea(file_path):
             m_ts = re.match(r"# EVENT \[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\] : (.*)", line)
             if m_ts:
                 try:
-                    ev_timestamp = pd.to_datetime(m_ts.group(1))
+                    # heure "naïve" UTC, comme les trames GPS
+                    ev_timestamp = pd.Timestamp(m_ts.group(1).rstrip("Z"))
+                    if clock_offset:
+                        offset_here = ((ev_timestamp - last_datetime).total_seconds()
+                                       if last_datetime is not None else None)
+                        # Event tapé en direct (écart ≈ décalage de l'horloge) → recalé.
+                        # Event rétrodaté (heure tapée à la main, écart très différent)
+                        # → gardé tel quel.
+                        if offset_here is None or abs(offset_here - clock_offset) <= RETRO_TOLERANCE_S:
+                            ev_timestamp = ev_timestamp - pd.Timedelta(seconds=clock_offset)
                 except:
                     ev_timestamp = last_datetime
                 raw = m_ts.group(2).strip()
@@ -716,6 +778,10 @@ def resample_every_0_1nm(df, df_events=None):
     out = df.loc[sorted(keep)].reset_index(drop=True)
     out = out.rename(columns={"lon_raw":"longitude","lat_raw":"latitude","datetime":"timestamp",
                                "SOG_RMC":"sog","TWS":"tws","TWD":"twd","HDG":"heading"})
+    # Colonnes absentes (pas de capteur de vent / cap, trace reconstituée…) → vides
+    for c in ["longitude","latitude","timestamp","sog","tws","twd","heading","allure"]:
+        if c not in out.columns:
+            out[c] = "-" if c == "allure" else np.nan
     out = out[["longitude","latitude","timestamp","sog","tws","twd","heading","allure"]]
     out["timestamp"] = pd.to_datetime(out["timestamp"])
     for col in SCIENCE_COLS: out[col] = "OFF"
