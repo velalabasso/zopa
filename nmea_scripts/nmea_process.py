@@ -675,7 +675,8 @@ def resample_every_0_1nm(df, df_events=None):
                 state = "ON" if str(ed).strip().upper().startswith("ON") else "OFF"
                 station_hyp_events.append((ts, state))
 
-    df = df.copy()
+    # Points avec horodatage valide, triés dans le temps
+    df = df.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
     lats = df["lat_raw"].values; lons = df["lon_raw"].values
     valid = ~(np.isnan(lats) | np.isnan(lons))
     dists = np.zeros(len(df))
@@ -691,7 +692,23 @@ def resample_every_0_1nm(df, df_events=None):
 
     df["dist_nm"]  = dists
     df["bin_01nm"] = (df["dist_nm"] / 0.1).astype(int)
-    out = df.groupby("bin_01nm").first().reset_index()
+
+    # 1) Un point tous les 0,1 nm (comme avant). head(1) garde un vrai point
+    #    GPS entier (first() mélangeait les colonnes de plusieurs points).
+    keep = set(df.groupby("bin_01nm").head(1).index)
+
+    # 2) + une ligne à chaque event science / station HYP (ON et OFF), pour
+    #    ne jamais perdre une station faite à l'arrêt ou à la dérive lente
+    #    (sinon aucun point à 0,1 nm ne tombe entre le ON et le OFF).
+    ev_times = [t for t, _ in science_events] + [t for t, _ in station_hyp_events]
+    if ev_times and len(df):
+        ts_all = df["datetime"].values.astype("datetime64[ns]").astype("int64")
+        for t in ev_times:
+            pos = np.searchsorted(ts_all, t.value, side="left")  # 1er point NMEA à/après l'event
+            if pos < len(df):
+                keep.add(int(pos))
+
+    out = df.loc[sorted(keep)].reset_index(drop=True)
     out = out.rename(columns={"lon_raw":"longitude","lat_raw":"latitude","datetime":"timestamp",
                                "SOG_RMC":"sog","TWS":"tws","TWD":"twd","HDG":"heading"})
     out = out[["longitude","latitude","timestamp","sog","tws","twd","heading","allure"]]
@@ -702,7 +719,7 @@ def resample_every_0_1nm(df, df_events=None):
     if science_events:
         ev_ts_ns = np.array([t.value for t, _ in science_events])
         ev_states = [s for _, s in science_events]
-        ts_ns = out["timestamp"].values.astype("int64")
+        ts_ns = out["timestamp"].values.astype("datetime64[ns]").astype("int64")
         for idx, t in enumerate(ts_ns):
             pos = np.searchsorted(ev_ts_ns, t, side="right") - 1
             if pos >= 0:
@@ -712,7 +729,7 @@ def resample_every_0_1nm(df, df_events=None):
     if station_hyp_events:
         st_ts_ns = np.array([t.value for t, _ in station_hyp_events])
         st_states = [s for _, s in station_hyp_events]
-        ts_ns = out["timestamp"].values.astype("int64")
+        ts_ns = out["timestamp"].values.astype("datetime64[ns]").astype("int64")
         for idx, t in enumerate(ts_ns):
             pos = np.searchsorted(st_ts_ns, t, side="right") - 1
             if pos >= 0:
@@ -1862,7 +1879,12 @@ for log_dir_name in os.listdir(base_folder):
     out_pdf  = os.path.join(log_dir, base + ".pdf")
 
     if not in_progress:
-        if os.path.exists(out_xlsx) and os.path.exists(out_csv) and os.path.exists(out_pdf):
+        # On ne saute le log que si les sorties sont PLUS RÉCENTES que le .gz :
+        # un log traité en cours de route (.txt) puis compressé à l'arrivée
+        # doit être retraité, sinon les derniers events n'arrivent jamais.
+        outs = [out_xlsx, out_csv, out_pdf]
+        src_mtime = os.path.getmtime(path)
+        if all(os.path.exists(p) and os.path.getmtime(p) >= src_mtime for p in outs):
             print("Already processed:", target_file); continue
 
     status = "IN PROGRESS" if in_progress else "DONE"
